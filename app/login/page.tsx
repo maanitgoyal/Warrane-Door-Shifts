@@ -1,14 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 export default function Login() {
     const [username, setUsername] = useState("");
     const [message, setMessage] = useState("");
     const [loading, setLoading] = useState(false);
-    const router = useRouter();
 
     const handleLogin = async () => {
         const trimmed = username.trim().toLowerCase();
@@ -32,7 +30,7 @@ export default function Login() {
             setMessage("Username not found. Please try again. If you are not sure about your username, ask head tutor.");
         } else {
             localStorage.setItem("shift_user", JSON.stringify(data));
-            router.push("/");
+            window.location.href = "/";
         }
     };
 

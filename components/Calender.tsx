@@ -8,27 +8,46 @@ const HOUR_HEIGHT = 30;
 export default function Calendar() {
     const [selectedDate, setSelectedDate] = useState(new Date());
     const [shifts, setShifts] = useState<any[]>([]);
+    const [openShifts, setOpenShifts] = useState<any[]>([]);
     const [user, setUser] = useState<any>(null);
 
     useEffect(() => {
-        supabase.auth.getUser().then(({ data }) => {
-            setUser(data.user);
-        });
-
-        const { data: listener } = supabase.auth.onAuthStateChange(
-            (_event, session) => {
-                setUser(session?.user ?? null);
-            }
-        );
-
-        return () => {
-            listener.subscription.unsubscribe();
-        };
+        const stored = localStorage.getItem("shift_user");
+        if (stored) setUser(JSON.parse(stored));
     }, []);
 
     useEffect(() => {
         fetchShifts();
     }, [selectedDate]);
+
+    useEffect(() => {
+        fetchOpenShifts();
+    }, []);
+
+    async function fetchOpenShifts() {
+        const now = new Date();
+        const todayStr = now.toISOString().split("T")[0];
+
+        const currentTri = TRIMESTERS.find((tri) => {
+            const end = new Date(tri.start.getTime() + 77 * 86400000);
+            return now >= tri.start && now < end;
+        });
+
+        let query = supabase
+            .from("shifts")
+            .select("*")
+            .eq("status", "open")
+            .gte("start_at", `${todayStr}T00:00:00`)
+            .order("start_at");
+
+        if (currentTri) {
+            const trimEnd = new Date(currentTri.start.getTime() + 77 * 86400000);
+            query = query.lt("start_at", trimEnd.toISOString());
+        }
+
+        const { data, error } = await query;
+        if (!error && data) setOpenShifts(data);
+    }
 
     async function fetchShifts() {
   const dateString = selectedDate.toISOString().split("T")[0];
@@ -104,11 +123,83 @@ export default function Calendar() {
         <div className="p-4 max-w-6xl mx-auto">
             <div className="flex gap-6">
                 {/* LEFT SIDE CALENDAR */}
-                <div className="hidden md:block w-64 bg-slate-900 border border-slate-800 rounded-2xl p-4 h-fit">
-                    <MiniCalendar
-                        selectedDate={selectedDate}
-                        onSelect={(date: Date) => setSelectedDate(date)}
-                    />
+                <div className="hidden md:flex md:flex-col gap-4 w-64">
+                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                        <MiniCalendar
+                            selectedDate={selectedDate}
+                            onSelect={(date: Date) => setSelectedDate(date)}
+                        />
+                    </div>
+
+                    {/* AVAILABLE SHIFTS LIST */}
+                    {user && <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                        <h2 className="text-white font-semibold text-sm mb-3">
+                            Available Shifts
+                        </h2>
+
+                        {(() => {
+                            const dateStr = selectedDate.toISOString().split("T")[0];
+                            const forDate = openShifts.filter((s) => s.start_at.startsWith(dateStr));
+                            if (forDate.length === 0) return <p className="text-slate-500 text-xs">No open shifts for this day.</p>;
+
+                            return (
+                                <div className="flex flex-col gap-2">
+                                    {groupBySlot(forDate).map((group) => {
+                                        const first = new Date(group[0].start_at);
+                                        const firstEnd = new Date(group[0].end_at);
+                                        const slotKey = `${first.getUTCDay()}-${first.getUTCHours()}:${first.getUTCMinutes()}-${firstEnd.getUTCHours()}:${firstEnd.getUTCMinutes()}`;
+                                        const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][first.getUTCDay()];
+                                        const timeLabel = `${formatUTCTime(first)} – ${formatUTCTime(firstEnd)}`;
+
+                                        const alsoAvailable = openShifts.filter((s) => {
+                                            if (s.start_at.startsWith(dateStr)) return false;
+                                            const ss = new Date(s.start_at);
+                                            const se = new Date(s.end_at);
+                                            const k = `${ss.getUTCDay()}-${ss.getUTCHours()}:${ss.getUTCMinutes()}-${se.getUTCHours()}:${se.getUTCMinutes()}`;
+                                            return k === slotKey;
+                                        });
+
+                                        return (
+                                            <div
+                                                key={slotKey}
+                                                className="bg-slate-800 border border-slate-700 rounded-xl p-3"
+                                            >
+                                                <div className="text-white text-sm font-semibold">{dayName}</div>
+                                                <div className="text-slate-400 text-xs mb-2">{timeLabel}</div>
+                                                <div className="flex flex-wrap gap-1">
+                                                    {group.map((shift) => (
+                                                        <span
+                                                            key={shift.id}
+                                                            title={new Date(shift.start_at).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}
+                                                            className="text-xs bg-green-600/20 text-green-400 px-2 py-0.5 rounded-full cursor-default"
+                                                        >
+                                                            {getTriWeekLabel(new Date(shift.start_at))}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                                {alsoAvailable.length > 0 && (
+                                                    <>
+                                                        <div className="text-slate-500 text-xs mt-2 mb-1">Also Available:</div>
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {alsoAvailable.map((shift) => (
+                                                                <span
+                                                                    key={shift.id}
+                                                                    title={new Date(shift.start_at).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}
+                                                                    className="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full cursor-default"
+                                                                >
+                                                                    {getTriWeekLabel(new Date(shift.start_at))}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            );
+                        })()}
+                    </div>}
                 </div>
 
                 {/* RIGHT SIDE */}
@@ -125,7 +216,7 @@ export default function Calendar() {
                                     )
                                 )
                             }
-                            className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg"
+                            className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
                         >
                             ◀
                         </button>
@@ -170,7 +261,7 @@ export default function Calendar() {
                                     )
                                 )
                             }
-                            className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg"
+                            className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
                         >
                             ▶
                         </button>
@@ -222,6 +313,21 @@ export default function Calendar() {
                                 </div>
                             );
                         })}
+
+                        {/* CURRENT TIME LINE */}
+                        {selectedDate.toDateString() === new Date().toDateString() && (() => {
+                            const now = new Date();
+                            const top = (now.getHours() + now.getMinutes() / 60) * HOUR_HEIGHT;
+                            return (
+                                <div
+                                    className="absolute left-0 right-0 flex items-center pointer-events-none z-10"
+                                    style={{ top: `${top}px` }}
+                                >
+                                    <div className="w-2 h-2 rounded-full bg-amber-400 ml-14 flex-shrink-0" />
+                                    <div className="flex-1 h-px bg-amber-400" />
+                                </div>
+                            );
+                        })()}
 
                         {/* TIME LABELS */}
                         {Array.from({ length: 24 }, (_, hour) => (
@@ -310,6 +416,42 @@ function MiniCalendar({
 }
 
 /* ---------------- HELPERS ---------------- */
+
+const TRIMESTERS = [
+    { label: "T1", start: new Date(Date.UTC(2026, 1, 8)) },  // 8 Feb 2026
+    { label: "T2", start: new Date(Date.UTC(2026, 4, 25)) }, // 25 May 2026
+];
+
+function getTriWeekLabel(date: Date): string {
+    for (const tri of TRIMESTERS) {
+        const diffDays = Math.floor((date.getTime() - tri.start.getTime()) / 86400000);
+        const week = Math.floor(diffDays / 7);
+        if (diffDays >= 0 && week <= 10) {
+            return `${tri.label} Wk${week}`;
+        }
+    }
+    return date.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+function groupBySlot(shifts: any[]): any[][] {
+    const groups: Record<string, any[]> = {};
+    for (const shift of shifts) {
+        const s = new Date(shift.start_at);
+        const e = new Date(shift.end_at);
+        const key = `${s.getUTCDay()}-${s.getUTCHours()}:${s.getUTCMinutes()}-${e.getUTCHours()}:${e.getUTCMinutes()}`;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(shift);
+    }
+    return Object.values(groups);
+}
+
+function formatUTCTime(date: Date) {
+    const h = date.getUTCHours();
+    const m = date.getUTCMinutes();
+    const ampm = h >= 12 ? "PM" : "AM";
+    const hour = h % 12 || 12;
+    return `${hour}:${String(m).padStart(2, "0")} ${ampm}`;
+}
 
 function formatHour(hour: number) {
     const ampm = hour >= 12 ? "PM" : "AM";
