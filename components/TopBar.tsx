@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 
 export default function TopBar() {
     const router = useRouter();
+    const pathname = usePathname();
     const [user, setUser] = useState<{ first_name: string; last_name: string } | null>(null);
 
     useEffect(() => {
@@ -27,6 +28,24 @@ export default function TopBar() {
             >
                 Warrane Door Shifts {new Date().getFullYear()}
             </Link>
+
+            {user && (
+                <nav className="flex gap-1">
+                    {[{ href: "/", label: "Calendar" }, { href: "/my-shifts", label: "My Shifts" }].map(({ href, label }) => (
+                        <Link
+                            key={href}
+                            href={href}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                pathname === href
+                                    ? "bg-slate-800 text-white"
+                                    : "text-slate-400 hover:text-white hover:bg-slate-800"
+                            }`}
+                        >
+                            {label}
+                        </Link>
+                    ))}
+                </nav>
+            )}
 
             {user ? (
                 <div className="relative group">

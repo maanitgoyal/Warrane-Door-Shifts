@@ -382,6 +382,7 @@ function ClaimModal({ shift, slotShifts, user, onClose, onSuccess }: {
             shift_id: shiftId,
             status: "pending",
             claimant_name: `${user.first_name} ${user.last_name}`,
+            username: user.username,
         }));
         const { error } = await supabase.from("claims").insert(claims);
         setSubmitting(false);
