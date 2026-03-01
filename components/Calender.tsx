@@ -10,6 +10,7 @@ export default function Calendar() {
     const [shifts, setShifts] = useState<any[]>([]);
     const [openShifts, setOpenShifts] = useState<any[]>([]);
     const [user, setUser] = useState<any>(null);
+    const [claimModal, setClaimModal] = useState<{ shift: any; slotShifts: any[] } | null>(null);
 
     useEffect(() => {
         const stored = localStorage.getItem("shift_user");
@@ -46,305 +47,431 @@ export default function Calendar() {
         }
 
         const { data, error } = await query;
-        if (!error && data) setOpenShifts(data);
+        if (!error && data) {
+            const shiftIds = data.map((s) => s.id);
+            let pendingIds = new Set<string>();
+            if (shiftIds.length > 0) {
+                const { data: claimsData } = await supabase
+                    .from("claims")
+                    .select("shift_id")
+                    .in("shift_id", shiftIds)
+                    .eq("status", "pending");
+                if (claimsData) pendingIds = new Set(claimsData.map((c) => c.shift_id));
+            }
+            setOpenShifts(data.filter((s) => !pendingIds.has(s.id)));
+        }
     }
 
     async function fetchShifts() {
-  const dateString = selectedDate.toISOString().split("T")[0];
-
-  const { data, error } = await supabase
-    .from("shifts")
-    .select("*")
-    .gte("start_at", `${dateString}T00:00:00`)
-    .lt("start_at", `${dateString}T23:59:59`)
-    .order("start_at");
-
-  console.log("Rows Found:", data?.length);
-  console.log("Error:", error);
-
-  if (!error && data) {
-    const formatted = data.map((shift) => {
-      const shiftStart = new Date(shift.start_at);
-      const shiftEnd = new Date(shift.end_at);
-
-      const start =
-        shiftStart.getUTCHours() +
-        shiftStart.getUTCMinutes() / 60;
-
-      const end =
-        shiftEnd.getUTCHours() +
-        shiftEnd.getUTCMinutes() / 60;
-
-      return {
-        ...shift,
-        start,
-        end,
-      };
-    });
-
-    setShifts(formatted);
-  }
-}
-
-    async function claimShift(shift: any) {
-        if (!user) {
-            alert("Please login first.");
-            return;
-        }
-
-        if (shift.status !== "open") return;
+        const dateString = selectedDate.toISOString().split("T")[0];
 
         const { data, error } = await supabase
             .from("shifts")
-            .update({
-                assigned_to: user.id,
-                status: "taken",
-            })
-            .eq("id", shift.id)
-            .eq("status", "open")
-            .select(); // 👈 VERY IMPORTANT
+            .select("*")
+            .gte("start_at", `${dateString}T00:00:00`)
+            .lt("start_at", `${dateString}T23:59:59`)
+            .order("start_at");
 
-        if (error) {
-            console.error(error);
-            return;
+        if (!error && data) {
+            const shiftIds = data.map((s) => s.id);
+            let claimMap: Record<string, any> = {};
+            if (shiftIds.length > 0) {
+                const { data: claimsData } = await supabase
+                    .from("claims")
+                    .select("shift_id, claimant_name")
+                    .in("shift_id", shiftIds)
+                    .eq("status", "pending");
+                if (claimsData) claimMap = Object.fromEntries(claimsData.map((c) => [c.shift_id, c]));
+            }
+            const formatted = data.map((shift) => {
+                const shiftStart = new Date(shift.start_at);
+                const shiftEnd = new Date(shift.end_at);
+                return {
+                    ...shift,
+                    start: shiftStart.getUTCHours() + shiftStart.getUTCMinutes() / 60,
+                    end: shiftEnd.getUTCHours() + shiftEnd.getUTCMinutes() / 60,
+                    pendingClaim: claimMap[shift.id] ?? null,
+                };
+            });
+            setShifts(formatted);
         }
+    }
 
-        if (data && data.length > 0) {
-            fetchShifts();
-        } else {
-            alert("Shift already taken.");
-        }
+    function getSlotShifts(shift: any): any[] {
+        const s = new Date(shift.start_at);
+        const e = new Date(shift.end_at);
+        const key = `${s.getUTCDay()}-${s.getUTCHours()}:${s.getUTCMinutes()}-${e.getUTCHours()}:${e.getUTCMinutes()}`;
+        return openShifts.filter((os) => {
+            const ss = new Date(os.start_at);
+            const se = new Date(os.end_at);
+            const k = `${ss.getUTCDay()}-${ss.getUTCHours()}:${ss.getUTCMinutes()}-${se.getUTCHours()}:${se.getUTCMinutes()}`;
+            return k === key;
+        });
+    }
 
+    function openClaimModal(shift: any, slotShifts?: any[]) {
+        if (!user) { alert("Please login first."); return; }
+        if (shift.status !== "open") return;
+        if (shift.pendingClaim) return;
+        const all = slotShifts ?? getSlotShifts(shift);
+        setClaimModal({ shift, slotShifts: all.length > 0 ? all : [shift] });
     }
 
     const weekDates = getWeekDates(selectedDate);
 
     return (
-        <div className="p-4 max-w-6xl mx-auto">
-            <div className="flex gap-6">
-                {/* LEFT SIDE CALENDAR */}
-                <div className="hidden md:flex md:flex-col gap-4 w-64">
-                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                        <MiniCalendar
-                            selectedDate={selectedDate}
-                            onSelect={(date: Date) => setSelectedDate(date)}
-                        />
-                    </div>
+        <>
+            <div className="p-4 max-w-6xl mx-auto">
+                <div className="flex gap-6">
+                    {/* LEFT SIDE CALENDAR */}
+                    <div className="hidden md:flex md:flex-col gap-4 w-64">
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                            <MiniCalendar
+                                selectedDate={selectedDate}
+                                onSelect={(date: Date) => setSelectedDate(date)}
+                            />
+                        </div>
 
-                    {/* AVAILABLE SHIFTS LIST */}
-                    {user && <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                        <h2 className="text-white font-semibold text-sm mb-3">
-                            Available Shifts
-                        </h2>
+                        {/* AVAILABLE SHIFTS LIST */}
+                        {user && (
+                            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                                <h2 className="text-white font-semibold text-sm mb-3">
+                                    Available Shifts
+                                </h2>
 
-                        {(() => {
-                            const dateStr = selectedDate.toISOString().split("T")[0];
-                            const forDate = openShifts.filter((s) => s.start_at.startsWith(dateStr));
-                            if (forDate.length === 0) return <p className="text-slate-500 text-xs">No open shifts for this day.</p>;
+                                {(() => {
+                                    const dateStr = selectedDate.toISOString().split("T")[0];
+                                    const forDate = openShifts.filter((s) => s.start_at.startsWith(dateStr));
+                                    if (forDate.length === 0)
+                                        return <p className="text-slate-500 text-xs">No open shifts for this day.</p>;
 
-                            return (
-                                <div className="flex flex-col gap-2">
-                                    {groupBySlot(forDate).map((group) => {
-                                        const first = new Date(group[0].start_at);
-                                        const firstEnd = new Date(group[0].end_at);
-                                        const slotKey = `${first.getUTCDay()}-${first.getUTCHours()}:${first.getUTCMinutes()}-${firstEnd.getUTCHours()}:${firstEnd.getUTCMinutes()}`;
-                                        const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][first.getUTCDay()];
-                                        const timeLabel = `${formatUTCTime(first)} – ${formatUTCTime(firstEnd)}`;
+                                    return (
+                                        <div className="flex flex-col gap-2">
+                                            {groupBySlot(forDate).map((group) => {
+                                                const first = new Date(group[0].start_at);
+                                                const firstEnd = new Date(group[0].end_at);
+                                                const slotKey = `${first.getUTCDay()}-${first.getUTCHours()}:${first.getUTCMinutes()}-${firstEnd.getUTCHours()}:${firstEnd.getUTCMinutes()}`;
+                                                const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][first.getUTCDay()];
+                                                const timeLabel = `${formatUTCTime(first)} – ${formatUTCTime(firstEnd)}`;
 
-                                        const alsoAvailable = openShifts.filter((s) => {
-                                            if (s.start_at.startsWith(dateStr)) return false;
-                                            const ss = new Date(s.start_at);
-                                            const se = new Date(s.end_at);
-                                            const k = `${ss.getUTCDay()}-${ss.getUTCHours()}:${ss.getUTCMinutes()}-${se.getUTCHours()}:${se.getUTCMinutes()}`;
-                                            return k === slotKey;
-                                        });
+                                                const alsoAvailable = openShifts.filter((s) => {
+                                                    if (s.start_at.startsWith(dateStr)) return false;
+                                                    const ss = new Date(s.start_at);
+                                                    const se = new Date(s.end_at);
+                                                    const k = `${ss.getUTCDay()}-${ss.getUTCHours()}:${ss.getUTCMinutes()}-${se.getUTCHours()}:${se.getUTCMinutes()}`;
+                                                    return k === slotKey;
+                                                });
 
-                                        return (
-                                            <div
-                                                key={slotKey}
-                                                className="bg-slate-800 border border-slate-700 rounded-xl p-3"
-                                            >
-                                                <div className="text-white text-sm font-semibold">{dayName}</div>
-                                                <div className="text-slate-400 text-xs mb-2">{timeLabel}</div>
-                                                <div className="flex flex-wrap gap-1">
-                                                    {group.map((shift) => (
-                                                        <span
-                                                            key={shift.id}
-                                                            title={new Date(shift.start_at).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}
-                                                            className="text-xs bg-green-600/20 text-green-400 px-2 py-0.5 rounded-full cursor-default"
-                                                        >
-                                                            {getTriWeekLabel(new Date(shift.start_at))}
-                                                        </span>
-                                                    ))}
-                                                </div>
-                                                {alsoAvailable.length > 0 && (
-                                                    <>
-                                                        <div className="text-slate-500 text-xs mt-2 mb-1">Also Available:</div>
+                                                return (
+                                                    <div
+                                                        key={slotKey}
+                                                        onClick={() => openClaimModal(group[0], [...group, ...alsoAvailable])}
+                                                        className="bg-slate-800 border border-slate-700 rounded-xl p-3 cursor-pointer hover:bg-slate-700 transition-colors"
+                                                    >
+                                                        <div className="text-white text-sm font-semibold">{dayName}</div>
+                                                        <div className="text-slate-400 text-xs mb-2">{timeLabel}</div>
                                                         <div className="flex flex-wrap gap-1">
-                                                            {alsoAvailable.map((shift) => (
+                                                            {group.map((shift) => (
                                                                 <span
                                                                     key={shift.id}
                                                                     title={new Date(shift.start_at).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}
-                                                                    className="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full cursor-default"
+                                                                    className="text-xs bg-green-600/20 text-green-400 px-2 py-0.5 rounded-full"
                                                                 >
                                                                     {getTriWeekLabel(new Date(shift.start_at))}
                                                                 </span>
                                                             ))}
                                                         </div>
-                                                    </>
-                                                )}
+                                                        {alsoAvailable.length > 0 && (
+                                                            <>
+                                                                <div className="text-slate-500 text-xs mt-2 mb-1">Also Available:</div>
+                                                                <div className="flex flex-wrap gap-1">
+                                                                    {alsoAvailable.map((shift) => (
+                                                                        <span
+                                                                            key={shift.id}
+                                                                            title={new Date(shift.start_at).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}
+                                                                            className="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full"
+                                                                        >
+                                                                            {getTriWeekLabel(new Date(shift.start_at))}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* RIGHT SIDE */}
+                    <div className="flex-1">
+                        {/* WEEK STRIP */}
+                        <div className="flex justify-between items-center mb-6">
+                            <button
+                                onClick={() =>
+                                    setSelectedDate(new Date(selectedDate.setDate(selectedDate.getDate() - 7)))
+                                }
+                                className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
+                            >
+                                ◀
+                            </button>
+
+                            <div className="flex gap-3">
+                                {weekDates.map((date, index) => {
+                                    const isSelected = date.toDateString() === selectedDate.toDateString();
+                                    return (
+                                        <div
+                                            key={index}
+                                            onClick={() => setSelectedDate(new Date(date))}
+                                            className={`cursor-pointer px-4 py-2 rounded-xl min-w-[80px] text-center transition ${
+                                                isSelected
+                                                    ? "bg-white text-black"
+                                                    : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                                            }`}
+                                        >
+                                            <div className="text-xs">
+                                                {date.toLocaleDateString("en-US", { weekday: "short" })}
                                             </div>
-                                        );
-                                    })}
-                                </div>
-                            );
-                        })()}
-                    </div>}
-                </div>
+                                            <div className="text-lg font-semibold">{date.getDate()}</div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
 
-                {/* RIGHT SIDE */}
-                <div className="flex-1">
-                    {/* WEEK STRIP */}
-                    <div className="flex justify-between items-center mb-6">
-                        <button
-                            onClick={() =>
-                                setSelectedDate(
-                                    new Date(
-                                        selectedDate.setDate(
-                                            selectedDate.getDate() - 7
-                                        )
-                                    )
-                                )
-                            }
-                            className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
-                        >
-                            ◀
-                        </button>
+                            <button
+                                onClick={() =>
+                                    setSelectedDate(new Date(selectedDate.setDate(selectedDate.getDate() + 7)))
+                                }
+                                className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
+                            >
+                                ▶
+                            </button>
+                        </div>
 
-                        <div className="flex gap-3">
-                            {weekDates.map((date, index) => {
-                                const isSelected =
-                                    date.toDateString() ===
-                                    selectedDate.toDateString();
+                        {/* TIMELINE */}
+                        <div className="relative rounded-2xl p-6 bg-slate-900 border border-slate-800 overflow-hidden">
+                            {shifts.map((shift, index) => {
+                                const height = (shift.end - shift.start) * HOUR_HEIGHT;
+                                const isSmall = height < 40;
+                                const isPending = !!shift.pendingClaim;
+                                const bgColor = isPending
+                                    ? "bg-amber-500 cursor-default"
+                                    : shift.status === "open"
+                                    ? "bg-green-600 cursor-pointer"
+                                    : shift.status === "taken"
+                                    ? "bg-red-600 cursor-default"
+                                    : "bg-slate-600 cursor-default";
 
                                 return (
                                     <div
                                         key={index}
-                                        onClick={() =>
-                                            setSelectedDate(new Date(date))
-                                        }
-                                        className={`cursor-pointer px-4 py-2 rounded-xl min-w-[80px] text-center transition ${isSelected
-                                            ? "bg-white text-black"
-                                            : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                            }`}
+                                        onClick={() => !isPending && openClaimModal(shift)}
+                                        className={`absolute left-16 right-4 rounded-xl shadow-lg text-white ${bgColor}`}
+                                        style={{
+                                            top: `${shift.start * HOUR_HEIGHT}px`,
+                                            height: `${height}px`,
+                                            padding: "6px 10px",
+                                            display: "flex",
+                                            flexDirection: "column",
+                                            justifyContent: "center",
+                                        }}
                                     >
-                                        <div className="text-xs">
-                                            {date.toLocaleDateString("en-US", {
-                                                weekday: "short",
-                                            })}
-                                        </div>
-                                        <div className="text-lg font-semibold">
-                                            {date.getDate()}
-                                        </div>
+                                        {isSmall ? (
+                                            <div className="font-semibold text-sm leading-tight">
+                                                {shift.start_at.slice(11, 16)} - {shift.end_at.slice(11, 16)}
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="font-semibold text-sm leading-tight">
+                                                    {shift.start_at.slice(11, 16)} - {shift.end_at.slice(11, 16)}
+                                                </div>
+                                                <div className="opacity-90 text-xs leading-tight">
+                                                    {isPending
+                                                        ? `Pending: ${shift.pendingClaim.claimant_name}`
+                                                        : shift.status.toUpperCase()}
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
+                                );
+                            })}
+
+                            {/* CURRENT TIME LINE */}
+                            {selectedDate.toDateString() === new Date().toDateString() && (() => {
+                                const now = new Date();
+                                const top = (now.getHours() + now.getMinutes() / 60) * HOUR_HEIGHT;
+                                return (
+                                    <div
+                                        className="absolute left-0 right-0 flex items-center pointer-events-none z-10"
+                                        style={{ top: `${top}px` }}
+                                    >
+                                        <div className="w-2 h-2 rounded-full bg-amber-400 ml-14 flex-shrink-0" />
+                                        <div className="flex-1 h-px bg-amber-400" />
+                                    </div>
+                                );
+                            })()}
+
+                            {/* TIME LABELS */}
+                            {Array.from({ length: 24 }, (_, hour) => (
+                                <div
+                                    key={hour}
+                                    className="absolute left-2 text-[10px] text-slate-500"
+                                    style={{ top: `${hour * HOUR_HEIGHT}px` }}
+                                >
+                                    {formatHour(hour)}
+                                </div>
+                            ))}
+
+                            <div style={{ height: `${24 * HOUR_HEIGHT}px` }} />
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {claimModal && (
+                <ClaimModal
+                    shift={claimModal.shift}
+                    slotShifts={claimModal.slotShifts}
+                    user={user}
+                    onClose={() => setClaimModal(null)}
+                    onSuccess={() => { fetchOpenShifts(); fetchShifts(); }}
+                />
+            )}
+        </>
+    );
+}
+
+/* ---------------- CLAIM MODAL ---------------- */
+
+function ClaimModal({ shift, slotShifts, user, onClose, onSuccess }: {
+    shift: any;
+    slotShifts: any[];
+    user: any;
+    onClose: () => void;
+    onSuccess: () => void;
+}) {
+    const [selected, setSelected] = useState<string[]>([shift.id]);
+    const [submitting, setSubmitting] = useState(false);
+    const [done, setDone] = useState(false);
+
+    const first = new Date(shift.start_at);
+    const firstEnd = new Date(shift.end_at);
+    const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][first.getUTCDay()];
+    const timeLabel = `${formatUTCTime(first)} – ${formatUTCTime(firstEnd)}`;
+    const allIds = slotShifts.map((s: any) => s.id);
+
+    function toggleShift(id: string) {
+        setSelected((prev) =>
+            prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+        );
+    }
+
+    function toggleAll() {
+        setSelected(selected.length === allIds.length ? [] : allIds);
+    }
+
+    async function submitClaim() {
+        if (selected.length === 0) return;
+        setSubmitting(true);
+        const claims = selected.map((shiftId) => ({
+            user_id: user.id,
+            shift_id: shiftId,
+            status: "pending",
+            claimant_name: `${user.first_name} ${user.last_name}`,
+        }));
+        const { error } = await supabase.from("claims").insert(claims);
+        setSubmitting(false);
+        if (!error) {
+            setDone(true);
+            setTimeout(() => { onSuccess(); onClose(); }, 1500);
+        } else {
+            console.error("Claim error:", error?.message, error?.details, error?.hint);
+        }
+    }
+
+    return (
+        <div
+            className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+            onClick={onClose}
+        >
+            <div
+                className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-96 max-h-[80vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+            >
+                {done ? (
+                    <div className="text-center py-8">
+                        <div className="text-green-400 text-4xl mb-3">✓</div>
+                        <div className="text-white font-semibold">Claim submitted!</div>
+                        <div className="text-slate-400 text-sm mt-1">Waiting for admin approval.</div>
+                    </div>
+                ) : (
+                    <>
+                        <div className="flex justify-between items-start mb-4">
+                            <div>
+                                <h2 className="text-white font-semibold text-lg">{dayName}</h2>
+                                <p className="text-slate-400 text-sm">{timeLabel}</p>
+                            </div>
+                            <button
+                                onClick={onClose}
+                                className="text-slate-500 hover:text-white text-xl cursor-pointer"
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        <p className="text-slate-400 text-sm mb-3">Select the weeks you want to claim:</p>
+
+                        {slotShifts.length > 1 && (
+                            <button
+                                onClick={toggleAll}
+                                className="w-full text-left text-sm px-3 py-2 rounded-lg mb-3 border border-slate-700 text-slate-300 hover:bg-slate-800 cursor-pointer transition-colors"
+                            >
+                                {selected.length === allIds.length ? "Deselect All" : "Select All (Whole Term)"}
+                            </button>
+                        )}
+
+                        <div className="flex flex-col gap-2 mb-5">
+                            {slotShifts.map((s: any) => {
+                                const label = getTriWeekLabel(new Date(s.start_at));
+                                const date = new Date(s.start_at).toLocaleDateString("en-AU", {
+                                    day: "numeric",
+                                    month: "short",
+                                    timeZone: "UTC",
+                                });
+                                const isChecked = selected.includes(s.id);
+                                return (
+                                    <label
+                                        key={s.id}
+                                        className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-800 cursor-pointer hover:bg-slate-700 transition-colors"
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={isChecked}
+                                            onChange={() => toggleShift(s.id)}
+                                            className="accent-green-500 w-4 h-4"
+                                        />
+                                        <span className="text-white text-sm font-medium">{label}</span>
+                                        <span className="text-slate-400 text-xs ml-auto">{date}</span>
+                                    </label>
                                 );
                             })}
                         </div>
 
                         <button
-                            onClick={() =>
-                                setSelectedDate(
-                                    new Date(
-                                        selectedDate.setDate(
-                                            selectedDate.getDate() + 7
-                                        )
-                                    )
-                                )
-                            }
-                            className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
+                            onClick={submitClaim}
+                            disabled={submitting || selected.length === 0}
+                            className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white font-semibold py-2 rounded-xl cursor-pointer transition-colors"
                         >
-                            ▶
+                            {submitting
+                                ? "Submitting..."
+                                : `Claim ${selected.length} Shift${selected.length !== 1 ? "s" : ""}`}
                         </button>
-                    </div>
-
-                    {/* TIMELINE */}
-                    <div className="relative rounded-2xl p-6 bg-slate-900 border border-slate-800 overflow-hidden">
-                        {shifts.map((shift, index) => {
-                            const height =
-                                (shift.end - shift.start) * HOUR_HEIGHT;
-
-                            const isSmall = height < 40;
-
-                            const bgColor =
-                                shift.status === "open"
-                                    ? "bg-green-600 cursor-pointer"
-                                    : shift.status === "taken"
-                                        ? "bg-red-600"
-                                        : "bg-slate-600";
-
-                            return (
-                                <div
-                                    key={index}
-                                    onClick={() => claimShift(shift)}
-                                    className={`absolute left-16 right-4 rounded-xl shadow-lg ${bgColor}`}
-                                    style={{
-                                        top: `${shift.start * HOUR_HEIGHT}px`,
-                                        height: `${height}px`,
-                                        padding: "6px 10px",
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        justifyContent: "center",
-                                    }}
-                                >
-                                    {isSmall ? (
-                                        <div className="font-semibold text-sm leading-tight">
-                                            {shift.start_at.slice(11, 16)} - {shift.end_at.slice(11, 16)}
-                                        </div>
-                                    ) : (
-                                        <>
-                                            <div className="font-semibold text-sm leading-tight">
-                                                {shift.start_at.slice(11, 16)} - {shift.end_at.slice(11, 16)}
-                                            </div>
-                                            <div className="opacity-80 text-xs leading-tight">
-                                                {shift.status.toUpperCase()}
-                                            </div>
-                                        </>
-                                    )}
-                                </div>
-                            );
-                        })}
-
-                        {/* CURRENT TIME LINE */}
-                        {selectedDate.toDateString() === new Date().toDateString() && (() => {
-                            const now = new Date();
-                            const top = (now.getHours() + now.getMinutes() / 60) * HOUR_HEIGHT;
-                            return (
-                                <div
-                                    className="absolute left-0 right-0 flex items-center pointer-events-none z-10"
-                                    style={{ top: `${top}px` }}
-                                >
-                                    <div className="w-2 h-2 rounded-full bg-amber-400 ml-14 flex-shrink-0" />
-                                    <div className="flex-1 h-px bg-amber-400" />
-                                </div>
-                            );
-                        })()}
-
-                        {/* TIME LABELS */}
-                        {Array.from({ length: 24 }, (_, hour) => (
-                            <div
-                                key={hour}
-                                className="absolute left-2 text-[10px] text-slate-500"
-                                style={{
-                                    top: `${hour * HOUR_HEIGHT}px`,
-                                }}
-                            >
-                                {formatHour(hour)}
-                            </div>
-                        ))}
-
-                        <div style={{ height: `${24 * HOUR_HEIGHT}px` }} />
-                    </div>
-                </div>
+                    </>
+                )}
             </div>
         </div>
     );
@@ -352,44 +479,29 @@ export default function Calendar() {
 
 /* ---------------- MINI CALENDAR ---------------- */
 
-function MiniCalendar({
-    selectedDate,
-    onSelect,
-}: any) {
+function MiniCalendar({ selectedDate, onSelect }: any) {
     const year = selectedDate.getFullYear();
     const month = selectedDate.getMonth();
 
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
-
     const daysInMonth = lastDay.getDate();
     const startOffset = firstDay.getDay();
 
     const cells = [];
-
-    for (let i = 0; i < startOffset; i++) {
-        cells.push(null);
-    }
-
-    for (let d = 1; d <= daysInMonth; d++) {
-        cells.push(new Date(year, month, d));
-    }
+    for (let i = 0; i < startOffset; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
 
     return (
         <div>
             <div className="text-center text-white font-semibold mb-4">
-                {firstDay.toLocaleString("en-US", {
-                    month: "long",
-                })}{" "}
-                {year}
+                {firstDay.toLocaleString("en-US", { month: "long" })} {year}
             </div>
 
             <div className="grid grid-cols-7 gap-2 text-xs text-slate-400 mb-2">
-                {["S", "M", "T", "W", "T", "F", "S"].map(
-                    (d, i) => (
-                        <div key={i}>{d}</div>
-                    )
-                )}
+                {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
+                    <div key={i}>{d}</div>
+                ))}
             </div>
 
             <div className="grid grid-cols-7 gap-2">
@@ -398,11 +510,11 @@ function MiniCalendar({
                         <div
                             key={index}
                             onClick={() => onSelect(date)}
-                            className={`cursor-pointer text-center p-2 rounded-lg text-sm ${date.toDateString() ===
-                                selectedDate.toDateString()
-                                ? "bg-indigo-600 text-white"
-                                : "text-slate-300 hover:bg-slate-800"
-                                }`}
+                            className={`cursor-pointer text-center p-2 rounded-lg text-sm ${
+                                date.toDateString() === selectedDate.toDateString()
+                                    ? "bg-indigo-600 text-white"
+                                    : "text-slate-300 hover:bg-slate-800"
+                            }`}
                         >
                             {date.getDate()}
                         </div>
@@ -426,9 +538,7 @@ function getTriWeekLabel(date: Date): string {
     for (const tri of TRIMESTERS) {
         const diffDays = Math.floor((date.getTime() - tri.start.getTime()) / 86400000);
         const week = Math.floor(diffDays / 7);
-        if (diffDays >= 0 && week <= 10) {
-            return `${tri.label} Wk${week}`;
-        }
+        if (diffDays >= 0 && week <= 10) return `${tri.label} Wk${week}`;
     }
     return date.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "UTC" });
 }
@@ -461,10 +571,7 @@ function formatHour(hour: number) {
 
 function getWeekDates(baseDate: Date) {
     const start = new Date(baseDate);
-    start.setDate(
-        baseDate.getDate() - baseDate.getDay()
-    );
-
+    start.setDate(baseDate.getDate() - baseDate.getDay());
     const dates = [];
     for (let i = 0; i < 7; i++) {
         const d = new Date(start);
