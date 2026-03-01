@@ -1,14 +1,104 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
 
 const HOUR_HEIGHT = 30;
 
 export default function Calendar() {
     const [selectedDate, setSelectedDate] = useState(new Date());
+    const [shifts, setShifts] = useState<any[]>([]);
+    const [user, setUser] = useState<any>(null);
+
+    useEffect(() => {
+        supabase.auth.getUser().then(({ data }) => {
+            setUser(data.user);
+        });
+
+        const { data: listener } = supabase.auth.onAuthStateChange(
+            (_event, session) => {
+                setUser(session?.user ?? null);
+            }
+        );
+
+        return () => {
+            listener.subscription.unsubscribe();
+        };
+    }, []);
+
+    useEffect(() => {
+        fetchShifts();
+    }, [selectedDate]);
+
+    async function fetchShifts() {
+  const dateString = selectedDate.toISOString().split("T")[0];
+
+  const { data, error } = await supabase
+    .from("shifts")
+    .select("*")
+    .gte("start_at", `${dateString}T00:00:00`)
+    .lt("start_at", `${dateString}T23:59:59`)
+    .order("start_at");
+
+  console.log("Rows Found:", data?.length);
+  console.log("Error:", error);
+
+  if (!error && data) {
+    const formatted = data.map((shift) => {
+      const shiftStart = new Date(shift.start_at);
+      const shiftEnd = new Date(shift.end_at);
+
+      const start =
+        shiftStart.getUTCHours() +
+        shiftStart.getUTCMinutes() / 60;
+
+      const end =
+        shiftEnd.getUTCHours() +
+        shiftEnd.getUTCMinutes() / 60;
+
+      return {
+        ...shift,
+        start,
+        end,
+      };
+    });
+
+    setShifts(formatted);
+  }
+}
+
+    async function claimShift(shift: any) {
+        if (!user) {
+            alert("Please login first.");
+            return;
+        }
+
+        if (shift.status !== "open") return;
+
+        const { data, error } = await supabase
+            .from("shifts")
+            .update({
+                assigned_to: user.id,
+                status: "taken",
+            })
+            .eq("id", shift.id)
+            .eq("status", "open")
+            .select(); // 👈 VERY IMPORTANT
+
+        if (error) {
+            console.error(error);
+            return;
+        }
+
+        if (data && data.length > 0) {
+            fetchShifts();
+        } else {
+            alert("Shift already taken.");
+        }
+
+    }
 
     const weekDates = getWeekDates(selectedDate);
-    const shifts = generateStaticShifts(selectedDate);
 
     return (
         <div className="p-4 max-w-6xl mx-auto">
@@ -21,15 +111,17 @@ export default function Calendar() {
                     />
                 </div>
 
-                {/* RIGHT SIDE MAIN CONTENT */}
+                {/* RIGHT SIDE */}
                 <div className="flex-1">
-                    {/* Week Strip */}
+                    {/* WEEK STRIP */}
                     <div className="flex justify-between items-center mb-6">
                         <button
                             onClick={() =>
                                 setSelectedDate(
                                     new Date(
-                                        selectedDate.setDate(selectedDate.getDate() - 7)
+                                        selectedDate.setDate(
+                                            selectedDate.getDate() - 7
+                                        )
                                     )
                                 )
                             }
@@ -72,7 +164,9 @@ export default function Calendar() {
                             onClick={() =>
                                 setSelectedDate(
                                     new Date(
-                                        selectedDate.setDate(selectedDate.getDate() + 7)
+                                        selectedDate.setDate(
+                                            selectedDate.getDate() + 7
+                                        )
                                     )
                                 )
                             }
@@ -82,7 +176,7 @@ export default function Calendar() {
                         </button>
                     </div>
 
-                    {/* Timeline */}
+                    {/* TIMELINE */}
                     <div className="relative rounded-2xl p-6 bg-slate-900 border border-slate-800 overflow-hidden">
                         {shifts.map((shift, index) => {
                             const height =
@@ -90,15 +184,18 @@ export default function Calendar() {
 
                             const isSmall = height < 40;
 
+                            const bgColor =
+                                shift.status === "open"
+                                    ? "bg-green-600 cursor-pointer"
+                                    : shift.status === "taken"
+                                        ? "bg-red-600"
+                                        : "bg-slate-600";
+
                             return (
                                 <div
                                     key={index}
-                                    className={`absolute left-16 right-4 rounded-xl shadow-lg ${shift.type === "staff"
-                                            ? "bg-indigo-600"
-                                            : shift.type === "resident"
-                                                ? "bg-emerald-600"
-                                                : "bg-purple-700"
-                                        }`}
+                                    onClick={() => claimShift(shift)}
+                                    className={`absolute left-16 right-4 rounded-xl shadow-lg ${bgColor}`}
                                     style={{
                                         top: `${shift.start * HOUR_HEIGHT}px`,
                                         height: `${height}px`,
@@ -110,15 +207,15 @@ export default function Calendar() {
                                 >
                                     {isSmall ? (
                                         <div className="font-semibold text-sm leading-tight">
-                                            {shift.title} {shift.label}
+                                            {shift.start_at.slice(11, 16)} - {shift.end_at.slice(11, 16)}
                                         </div>
                                     ) : (
                                         <>
                                             <div className="font-semibold text-sm leading-tight">
-                                                {shift.title}
+                                                {shift.start_at.slice(11, 16)} - {shift.end_at.slice(11, 16)}
                                             </div>
                                             <div className="opacity-80 text-xs leading-tight">
-                                                {shift.label}
+                                                {shift.status.toUpperCase()}
                                             </div>
                                         </>
                                     )}
@@ -126,9 +223,7 @@ export default function Calendar() {
                             );
                         })}
 
-
-
-                        {/* Time Labels */}
+                        {/* TIME LABELS */}
                         {Array.from({ length: 24 }, (_, hour) => (
                             <div
                                 key={hour}
@@ -141,11 +236,7 @@ export default function Calendar() {
                             </div>
                         ))}
 
-                        <div
-                            style={{
-                                height: `${24 * HOUR_HEIGHT}px`,
-                            }}
-                        />
+                        <div style={{ height: `${24 * HOUR_HEIGHT}px` }} />
                     </div>
                 </div>
             </div>
@@ -188,9 +279,11 @@ function MiniCalendar({
             </div>
 
             <div className="grid grid-cols-7 gap-2 text-xs text-slate-400 mb-2">
-                {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
-                    <div key={i}>{d}</div>
-                ))}
+                {["S", "M", "T", "W", "T", "F", "S"].map(
+                    (d, i) => (
+                        <div key={i}>{d}</div>
+                    )
+                )}
             </div>
 
             <div className="grid grid-cols-7 gap-2">
@@ -216,44 +309,6 @@ function MiniCalendar({
     );
 }
 
-/* ---------------- SHIFT LOGIC ---------------- */
-
-function generateStaticShifts(date: Date) {
-    const day = date.getDay();
-    const shifts: any[] = [];
-
-    if (day >= 1 && day <= 3) {
-        shifts.push(createShift("Tony Celis", 8, 13, "staff"));
-        shifts.push(createShift("Tony Celis", 14, 18, "staff"));
-    }
-
-    if (day === 4 || day === 5) {
-        shifts.push(createShift("Steve Vasquez", 8, 13, "staff"));
-        shifts.push(createShift("Steve Vasquez", 14, 18, "staff"));
-    }
-
-    if (day >= 1 && day <= 5) {
-        shifts.push(createShift("Noe", 7, 8, "staff"));
-    }
-
-    return shifts;
-}
-
-function createShift(
-    title: string,
-    start: number,
-    end: number,
-    type: string
-) {
-    return {
-        title,
-        start,
-        end,
-        type,
-        label: `${formatHour(start)} - ${formatHour(end)}`,
-    };
-}
-
 /* ---------------- HELPERS ---------------- */
 
 function formatHour(hour: number) {
@@ -264,7 +319,9 @@ function formatHour(hour: number) {
 
 function getWeekDates(baseDate: Date) {
     const start = new Date(baseDate);
-    start.setDate(baseDate.getDate() - baseDate.getDay());
+    start.setDate(
+        baseDate.getDate() - baseDate.getDay()
+    );
 
     const dates = [];
     for (let i = 0; i < 7; i++) {
