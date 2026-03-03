@@ -190,6 +190,7 @@ export default function AdminPage() {
     });
     const [dateShifts, setDateShifts] = useState<any[]>([]);
     const [assignModal, setAssignModal] = useState<any>(null);
+    const [deleteConfirmShift, setDeleteConfirmShift] = useState<any>(null);
 
     useEffect(() => {
         const stored = localStorage.getItem("shift_user");
@@ -267,10 +268,15 @@ export default function AdminPage() {
         setDateShifts(shiftsRaw.map((s) => ({ ...s, assignedTo: claimMap[s.id] ?? null })));
     }
 
-    async function deleteShift(shiftId: string) {
-        if (!window.confirm("Delete this shift permanently?")) return;
-        await supabase.from("claims").delete().eq("shift_id", shiftId);
-        await supabase.from("shifts").delete().eq("id", shiftId);
+    function deleteShift(shift: any) {
+        setDeleteConfirmShift(shift);
+    }
+
+    async function confirmDelete() {
+        if (!deleteConfirmShift) return;
+        await supabase.from("claims").delete().eq("shift_id", deleteConfirmShift.id);
+        await supabase.from("shifts").delete().eq("id", deleteConfirmShift.id);
+        setDeleteConfirmShift(null);
         fetchDateShifts();
     }
 
@@ -641,6 +647,7 @@ export default function AdminPage() {
                                         {shift.assignedTo && (
                                             <button
                                                 onClick={() => makeShiftOpen(shift.id)}
+                                                title="Remove the current assignee of the shift"
                                                 className="text-xs px-3 py-1.5 rounded-lg border border-slate-600 text-slate-400 hover:text-amber-400 hover:border-amber-500/50 cursor-pointer transition-colors"
                                             >
                                                 Make Open
@@ -648,12 +655,14 @@ export default function AdminPage() {
                                         )}
                                         <button
                                             onClick={() => setAssignModal(shift)}
+                                            title="Assign the shift to someone"
                                             className="text-xs px-3 py-1.5 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700 cursor-pointer transition-colors"
                                         >
                                             Assign
                                         </button>
                                         <button
-                                            onClick={() => deleteShift(shift.id)}
+                                            onClick={() => deleteShift(shift)}
+                                            title="Delete the shift"
                                             className="text-xs px-3 py-1.5 rounded-lg border border-red-600/30 text-red-400 hover:bg-red-600/20 cursor-pointer transition-colors"
                                         >
                                             Delete
@@ -703,8 +712,93 @@ export default function AdminPage() {
                     onSuccess={() => { setAssignModal(null); fetchDateShifts(); fetchData(); }}
                 />
             )}
+
+            {deleteConfirmShift && (
+                <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-80 shadow-2xl">
+                        <h3 className="text-white font-semibold text-base mb-2">Delete shift?</h3>
+                        <p className="text-slate-400 text-sm mb-1">
+                            {formatUTCTime(new Date(deleteConfirmShift.start_at))} – {formatUTCTime(new Date(deleteConfirmShift.end_at))}
+                            {" · "}{getTriWeekLabel(new Date(deleteConfirmShift.start_at))}
+                        </p>
+                        {deleteConfirmShift.assignedTo && (
+                            <p className="text-amber-400 text-xs mb-3">Currently assigned to {deleteConfirmShift.assignedTo.claimant_name}</p>
+                        )}
+                        <p className="text-slate-500 text-xs mb-5">This action cannot be undone.</p>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => setDeleteConfirmShift(null)}
+                                className="flex-1 py-2 rounded-xl border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 text-sm cursor-pointer transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmDelete}
+                                className="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-semibold text-sm cursor-pointer transition-colors"
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
+}
+
+/* ─── merge adjacent shifts (module scope) ─── */
+
+async function mergeAdjacentShifts(username: string, claimantName: string, userId: string | null, pivotId: string): Promise<void> {
+    const { data: pivot } = await supabase.from("shifts").select("start_at, end_at, category").eq("id", pivotId).maybeSingle();
+    if (!pivot) return;
+
+    const { data: userClaims } = await supabase.from("claims").select("shift_id").eq("username", username).eq("status", "approved");
+    if (!userClaims || userClaims.length < 2) return;
+
+    const otherIds = userClaims.map((c) => c.shift_id).filter((id) => id !== pivotId);
+    if (otherIds.length === 0) return;
+
+    const { data: adjacent } = await supabase.from("shifts").select("id, start_at, end_at").in("id", otherIds);
+    if (!adjacent || adjacent.length === 0) return;
+
+    let chainStart = pivot.start_at;
+    let chainEnd = pivot.end_at;
+    const chainIds: string[] = [pivotId];
+
+    let expanded = true;
+    while (expanded) {
+        expanded = false;
+        for (const s of adjacent) {
+            if (chainIds.includes(s.id)) continue;
+            if (s.end_at === chainStart) {
+                chainStart = s.start_at;
+                chainIds.push(s.id);
+                expanded = true;
+                break;
+            } else if (s.start_at === chainEnd) {
+                chainEnd = s.end_at;
+                chainIds.push(s.id);
+                expanded = true;
+                break;
+            }
+        }
+    }
+
+    if (chainIds.length <= 1) return;
+
+    const cat = pivot.category ?? null;
+    const { data: mergedShifts } = await supabase.from("shifts")
+        .insert({ start_at: chainStart, end_at: chainEnd, status: "taken", ...(cat ? { category: cat } : {}) })
+        .select("id");
+    const mergedId = mergedShifts?.[0]?.id ?? null;
+    if (!mergedId) return;
+
+    await supabase.from("claims").insert({
+        shift_id: mergedId, username, claimant_name: claimantName, status: "approved",
+        ...(userId ? { user_id: userId } : {}),
+    });
+    await supabase.from("claims").delete().in("shift_id", chainIds).eq("status", "approved");
+    await supabase.from("shifts").delete().in("id", chainIds);
 }
 
 /* ─── Time helpers (module scope) ─── */
@@ -806,11 +900,20 @@ function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () =>
         const dayOfWeek = new Date(shift.start_at).getUTCDay();
         const startTime = shift.start_at.slice(11, 16);
         const endTime = shift.end_at.slice(11, 16);
+        const shiftDate = new Date(shift.start_at);
+        const currentTri = TRIMESTERS.find((tri) => {
+            const diff = Math.floor((shiftDate.getTime() - tri.start.getTime()) / 86400000);
+            return diff >= 0 && diff < 77;
+        });
+        const triStart = currentTri?.start ?? null;
+        const triEnd = currentTri ? new Date(currentTri.start.getTime() + 77 * 86400000) : null;
         supabase.from("shifts").select("id, start_at, end_at, status").order("start_at").then(({ data }) => {
             if (!data) return;
             const same = data.filter((s) => {
                 const d = new Date(s.start_at);
-                return d.getUTCDay() === dayOfWeek
+                const inTri = triStart && triEnd ? d >= triStart && d < triEnd : true;
+                return inTri
+                    && d.getUTCDay() === dayOfWeek
                     && s.start_at.slice(11, 16) === startTime
                     && s.end_at.slice(11, 16) === endTime;
             });
@@ -897,6 +1000,7 @@ function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () =>
                     username: selectedUser.username,
                 });
                 await supabase.from("shifts").update({ status: "taken" }).eq("id", shiftId);
+                await mergeAdjacentShifts(selectedUser.username, `${selectedUser.first_name} ${selectedUser.last_name}`, selectedUser.id, shiftId);
             }));
         } else {
             await Promise.all(selectedShiftIds.map((shiftId) => assignPartial(shiftId)));
