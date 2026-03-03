@@ -11,8 +11,24 @@ const TRIMESTERS = [
     { label: "T2", start: new Date(Date.UTC(2026, 4, 25)) },
 ];
 
+function getSydneyParts(d: Date = new Date()) {
+    const parts = new Intl.DateTimeFormat("en-AU", {
+        timeZone: "Australia/Sydney",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+    }).formatToParts(d);
+    const get = (type: string) => parseInt(parts.find(p => p.type === type)!.value);
+    return { year: get("year"), month: get("month") - 1, day: get("day"), hour: get("hour") % 24, minute: get("minute"), second: get("second") };
+}
+
+function fakeUtcNow(): Date {
+    const sp = getSydneyParts();
+    return new Date(Date.UTC(sp.year, sp.month, sp.day, sp.hour, sp.minute, sp.second));
+}
+
 function getCurrentTriStart(): Date {
-    const now = new Date();
+    const now = fakeUtcNow();
     for (let i = TRIMESTERS.length - 1; i >= 0; i--) {
         if (now >= TRIMESTERS[i].start) return TRIMESTERS[i].start;
     }
@@ -61,7 +77,7 @@ export default function AdminPayoutsPage() {
 
     const triStart = getCurrentTriStart();
     const [dateFrom, setDateFrom] = useState(() => triStart.toISOString().split("T")[0]);
-    const [dateTo, setDateTo] = useState(() => new Date().toISOString().split("T")[0]);
+    const [dateTo, setDateTo] = useState(() => fakeUtcNow().toISOString().split("T")[0]);
 
     useEffect(() => {
         const stored = localStorage.getItem("shift_user");
@@ -73,7 +89,7 @@ export default function AdminPayoutsPage() {
 
     async function fetchPayouts() {
         setLoading(true);
-        const now = new Date().toISOString();
+        const now = fakeUtcNow().toISOString();
 
         const [{ data: usersRaw }, { data: claimsRaw }] = await Promise.all([
             supabase.from("users").select("username, role"),
