@@ -7,7 +7,7 @@ import SwapModal from "@/components/SwapModal";
 const HOUR_HEIGHT = 30;
 
 export default function Calendar() {
-    const [selectedDate, setSelectedDate] = useState(new Date());
+    const [selectedDate, setSelectedDate] = useState(() => localToUTCMidnight());
     const [shifts, setShifts] = useState<any[]>([]);
     const [openShifts, setOpenShifts] = useState<any[]>([]);
     const [user, setUser] = useState<any>(null);
@@ -30,7 +30,7 @@ export default function Calendar() {
 
     async function fetchOpenShifts() {
         const now = new Date();
-        const todayStr = now.toISOString().split("T")[0];
+        const todayStr = localToUTCMidnight(now).toISOString().split("T")[0];
 
         const currentTri = TRIMESTERS.find((tri) => {
             const end = new Date(tri.start.getTime() + 77 * 86400000);
@@ -69,9 +69,8 @@ export default function Calendar() {
         const dateStr = selectedDate.toISOString().split("T")[0];
 
         // Also fetch overnight shifts that started the previous day
-        const prev = new Date(selectedDate);
-        prev.setDate(prev.getDate() - 1);
-        const prevStr = prev.toISOString().split("T")[0];
+        // Subtract exactly 24 h in ms so we stay in UTC-midnight arithmetic
+        const prevStr = new Date(selectedDate.getTime() - 86400000).toISOString().split("T")[0];
 
         const [{ data: todayData }, { data: overnightData }] = await Promise.all([
             supabase.from("shifts").select("*")
@@ -219,7 +218,7 @@ export default function Calendar() {
                                                 const firstEnd = new Date(group[0].end_at);
                                                 const slotKey = `${first.getUTCDay()}-${first.getUTCHours()}:${first.getUTCMinutes()}-${firstEnd.getUTCHours()}:${firstEnd.getUTCMinutes()}`;
                                                 const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][first.getUTCDay()];
-                                                const timeLabel = `${formatUTCTime(first)} – ${formatUTCTime(firstEnd)}`;
+                                                const timeLabel = `${formatUTCTime(first)} -- ${formatUTCTime(firstEnd)}`;
 
                                                 const alsoAvailable = openShifts.filter((s) => {
                                                     if (s.start_at.startsWith(dateStr)) return false;
@@ -279,9 +278,7 @@ export default function Calendar() {
                         {/* WEEK STRIP */}
                         <div className="flex justify-between items-center mb-6">
                             <button
-                                onClick={() =>
-                                    setSelectedDate(new Date(selectedDate.setDate(selectedDate.getDate() - 7)))
-                                }
+                                onClick={() => setSelectedDate(new Date(selectedDate.getTime() - 7 * 86400000))}
                                 className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
                             >
                                 ◀
@@ -289,11 +286,11 @@ export default function Calendar() {
 
                             <div className="flex gap-3">
                                 {weekDates.map((date, index) => {
-                                    const isSelected = date.toDateString() === selectedDate.toDateString();
+                                    const isSelected = date.getTime() === selectedDate.getTime();
                                     return (
                                         <div
                                             key={index}
-                                            onClick={() => setSelectedDate(new Date(date))}
+                                            onClick={() => setSelectedDate(date)}
                                             className={`cursor-pointer px-4 py-2 rounded-xl min-w-[80px] text-center transition ${
                                                 isSelected
                                                     ? "bg-white text-black"
@@ -301,18 +298,16 @@ export default function Calendar() {
                                             }`}
                                         >
                                             <div className="text-xs">
-                                                {date.toLocaleDateString("en-US", { weekday: "short" })}
+                                                {date.toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" })}
                                             </div>
-                                            <div className="text-lg font-semibold">{date.getDate()}</div>
+                                            <div className="text-lg font-semibold">{date.getUTCDate()}</div>
                                         </div>
                                     );
                                 })}
                             </div>
 
                             <button
-                                onClick={() =>
-                                    setSelectedDate(new Date(selectedDate.setDate(selectedDate.getDate() + 7)))
-                                }
+                                onClick={() => setSelectedDate(new Date(selectedDate.getTime() + 7 * 86400000))}
                                 className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
                             >
                                 ▶
@@ -320,8 +315,10 @@ export default function Calendar() {
                         </div>
 
                         {/* CURRENTLY ON DOOR */}
-                        {selectedDate.toDateString() === new Date().toDateString() && (() => {
-                            const nowMs = Date.now();
+                        {selectedDate.getTime() === localToUTCMidnight().getTime() && (() => {
+                            // Use "fake UTC" now: local clock hours stored as UTC, matching how shifts are stored
+                            const _now = new Date();
+                            const nowMs = Date.UTC(_now.getFullYear(), _now.getMonth(), _now.getDate(), _now.getHours(), _now.getMinutes(), _now.getSeconds());
                             const active = shifts.find(
                                 (s) => nowMs >= new Date(s.start_at).getTime() && nowMs < new Date(s.end_at).getTime()
                             );
@@ -343,7 +340,10 @@ export default function Calendar() {
                                 const isSmall = height < 40;
                                 const dateStr = selectedDate.toISOString().split("T")[0];
                                 const displayEndMs = new Date(`${dateStr}T00:00:00Z`).getTime() + shift.end * 3600000;
-                                const isPast = displayEndMs < Date.now();
+                                // Compare against fake-UTC now (local clock hours as UTC) to match shift storage
+                                const _n = new Date();
+                                const fakeNowMs = Date.UTC(_n.getFullYear(), _n.getMonth(), _n.getDate(), _n.getHours(), _n.getMinutes(), _n.getSeconds());
+                                const isPast = displayEndMs < fakeNowMs;
                                 const isUserShift = userShiftIds.has(shift.id);
                                 const hasApprovedClaim = !!shift.approvedClaim;
                                 const claimantName = shift.approvedClaim?.claimant_name;
@@ -390,15 +390,17 @@ export default function Calendar() {
                                     >
                                         <div className="flex items-center gap-1 min-w-0 leading-tight">
                                             <span className={`font-semibold flex-shrink-0 ${isSmall ? "text-[10px]" : "text-xs"}`}>{displayTimeLabel}</span>
-                                            {sublabel && <span className={`font-bold truncate ${isSmall ? "text-[11px]" : "text-[13px]"}`}>· {sublabel}</span>}
+                                            {sublabel && <span className={`font-bold truncate ${isSmall ? "text-[11px]" : "text-[13px]"}`}> : {sublabel}</span>}
                                         </div>
                                     </div>
                                 );
                             })}
 
                             {/* CURRENT TIME LINE */}
-                            {selectedDate.toDateString() === new Date().toDateString() && (() => {
+                            {selectedDate.getTime() === localToUTCMidnight().getTime() && (() => {
                                 const now = new Date();
+                                // Shifts are stored with UTC hours == local hours ("fake UTC"),
+                                // so the current-time line must also use local hours.
                                 const top = (now.getHours() + now.getMinutes() / 60) * HOUR_HEIGHT;
                                 return (
                                     <div
@@ -467,7 +469,7 @@ function ClaimModal({ shift, slotShifts, user, onClose, onSuccess }: {
     const first = new Date(shift.start_at);
     const firstEnd = new Date(shift.end_at);
     const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][first.getUTCDay()];
-    const timeLabel = `${formatUTCTime(first)} – ${formatUTCTime(firstEnd)}`;
+    const timeLabel = `${formatUTCTime(first)} -- ${formatUTCTime(firstEnd)}`;
     const allIds = slotShifts.map((s: any) => s.id);
 
     function toggleShift(id: string) {
@@ -587,22 +589,22 @@ function ClaimModal({ shift, slotShifts, user, onClose, onSuccess }: {
 /* ---------------- MINI CALENDAR ---------------- */
 
 function MiniCalendar({ selectedDate, onSelect }: any) {
-    const year = selectedDate.getFullYear();
-    const month = selectedDate.getMonth();
+    // Use UTC methods throughout so all dates are UTC-midnight and stay consistent
+    const year = selectedDate.getUTCFullYear();
+    const month = selectedDate.getUTCMonth();
 
-    const firstDay = new Date(year, month, 1);
-    const lastDay = new Date(year, month + 1, 0);
-    const daysInMonth = lastDay.getDate();
-    const startOffset = firstDay.getDay();
+    const firstDay = new Date(Date.UTC(year, month, 1));
+    const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    const startOffset = firstDay.getUTCDay();
 
     const cells = [];
     for (let i = 0; i < startOffset; i++) cells.push(null);
-    for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
+    for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(Date.UTC(year, month, d)));
 
     return (
         <div>
             <div className="text-center text-white font-semibold mb-4">
-                {firstDay.toLocaleString("en-US", { month: "long" })} {year}
+                {firstDay.toLocaleString("en-US", { month: "long", timeZone: "UTC" })} {year}
             </div>
 
             <div className="grid grid-cols-7 gap-2 text-xs text-slate-400 mb-2">
@@ -618,12 +620,12 @@ function MiniCalendar({ selectedDate, onSelect }: any) {
                             key={index}
                             onClick={() => onSelect(date)}
                             className={`cursor-pointer text-center p-2 rounded-lg text-sm ${
-                                date.toDateString() === selectedDate.toDateString()
+                                date.getTime() === selectedDate.getTime()
                                     ? "bg-indigo-600 text-white"
                                     : "text-slate-300 hover:bg-slate-800"
                             }`}
                         >
-                            {date.getDate()}
+                            {date.getUTCDate()}
                         </div>
                     ) : (
                         <div key={index} />
@@ -635,6 +637,13 @@ function MiniCalendar({ selectedDate, onSelect }: any) {
 }
 
 /* ---------------- HELPERS ---------------- */
+
+// Creates a UTC-midnight Date from the *local* calendar date, so that
+// toISOString().split("T")[0] always returns the user's local date string
+// regardless of timezone (fixes the Vercel UTC vs AEST display mismatch).
+function localToUTCMidnight(d: Date = new Date()): Date {
+    return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+}
 
 const TRIMESTERS = [
     { label: "T1", start: new Date(Date.UTC(2026, 1, 8)) },  // 8 Feb 2026
@@ -687,13 +696,8 @@ function formatHourDecimal(h: number): string {
 }
 
 function getWeekDates(baseDate: Date) {
-    const start = new Date(baseDate);
-    start.setDate(baseDate.getDate() - baseDate.getDay());
-    const dates = [];
-    for (let i = 0; i < 7; i++) {
-        const d = new Date(start);
-        d.setDate(start.getDate() + i);
-        dates.push(new Date(d));
-    }
-    return dates;
+    // Use UTC day-of-week and ms arithmetic so results are always UTC-midnight dates
+    const dayOfWeek = baseDate.getUTCDay();
+    const sundayMs = baseDate.getTime() - dayOfWeek * 86400000;
+    return Array.from({ length: 7 }, (_, i) => new Date(sundayMs + i * 86400000));
 }

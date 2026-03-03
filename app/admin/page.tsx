@@ -66,6 +66,112 @@ type UserGroup = {
     swaps: PendingSwap[];
 };
 
+/* ─── partial swap helper ─── */
+
+async function approvePartialSwap(swap: PendingSwap): Promise<void> {
+    const customStart = swap.custom_start_at!;
+    const customEnd = swap.custom_end_at!;
+
+    // Fetch the original shift (use maybeSingle so we never throw)
+    const { data: originalShift } = await supabase
+        .from("shifts").select("start_at, end_at, category").eq("id", swap.shift_id).maybeSingle();
+
+    const { data: targetUser } = await supabase
+        .from("users").select("id").eq("username", swap.target_username).maybeSingle();
+
+    const { data: requesterClaim } = await supabase
+        .from("claims").select("id, user_id")
+        .eq("shift_id", swap.shift_id)
+        .eq("username", swap.requester_username)
+        .eq("status", "approved")
+        .maybeSingle();
+
+    // Always approve the swap record regardless of what happens below
+    await supabase.from("swaps").update({ status: "approved" }).eq("id", swap.id);
+
+    if (!originalShift) {
+        // No shift found — fall back: just transfer the whole claim
+        await supabase.from("claims").update({
+            username: swap.target_username,
+            claimant_name: swap.target_name,
+            ...(targetUser ? { user_id: targetUser.id } : {}),
+        }).eq("shift_id", swap.shift_id).eq("username", swap.requester_username).eq("status", "approved");
+        return;
+    }
+
+    const customStartMs = new Date(customStart).getTime();
+    const customEndMs = new Date(customEnd).getTime();
+    const shiftStartMs = new Date(originalShift.start_at).getTime();
+    const shiftEndMs = new Date(originalShift.end_at).getTime();
+
+    const hasBefore = customStartMs > shiftStartMs;
+    const hasAfter = customEndMs < shiftEndMs;
+
+    // Edge case: custom range covers the entire shift — treat as whole swap
+    if (!hasBefore && !hasAfter) {
+        await supabase.from("claims").update({
+            username: swap.target_username,
+            claimant_name: swap.target_name,
+            ...(targetUser ? { user_id: targetUser.id } : {}),
+        }).eq("shift_id", swap.shift_id).eq("username", swap.requester_username).eq("status", "approved");
+        return;
+    }
+
+    const shiftCategory = originalShift.category ?? null;
+
+    // Try to create a new shift for the swapped portion (assigned to target).
+    // Use .select() without .single() so a DB error doesn't throw.
+    const { data: swappedShifts, error: swappedError } = await supabase
+        .from("shifts")
+        .insert({ start_at: customStart, end_at: customEnd, status: "taken", ...(shiftCategory ? { category: shiftCategory } : {}) })
+        .select("id");
+    if (swappedError) console.error("[partialSwap] shift insert failed:", swappedError.message, swappedError.details, swappedError.hint);
+    const swappedShiftId = swappedShifts?.[0]?.id ?? null;
+
+    if (swappedShiftId) {
+        // New shift created for target — adjust original for requester
+        await supabase.from("claims").insert({
+            shift_id: swappedShiftId,
+            username: swap.target_username,
+            claimant_name: swap.target_name,
+            status: "approved",
+            ...(targetUser ? { user_id: targetUser.id } : {}),
+        });
+
+        if (hasBefore && hasAfter) {
+            // Middle was swapped: original becomes the "before" block, create "after"
+            await supabase.from("shifts").update({ end_at: customStart }).eq("id", swap.shift_id);
+            const { data: afterShifts } = await supabase
+                .from("shifts")
+                .insert({ start_at: customEnd, end_at: originalShift.end_at, status: "taken", ...(shiftCategory ? { category: shiftCategory } : {}) })
+                .select("id");
+            const afterShiftId = afterShifts?.[0]?.id ?? null;
+            if (afterShiftId) {
+                await supabase.from("claims").insert({
+                    shift_id: afterShiftId,
+                    username: swap.requester_username,
+                    claimant_name: swap.requester_name,
+                    status: "approved",
+                    ...(requesterClaim ? { user_id: requesterClaim.user_id } : {}),
+                });
+            }
+        } else if (hasBefore) {
+            // End was swapped: shorten original to the "before" block
+            await supabase.from("shifts").update({ end_at: customStart }).eq("id", swap.shift_id);
+        } else {
+            // Start was swapped: advance original start to the "after" block
+            await supabase.from("shifts").update({ start_at: customEnd }).eq("id", swap.shift_id);
+        }
+    } else {
+        // Shift creation failed — fall back: transfer the whole claim to the target
+        await supabase.from("claims").update({
+            username: swap.target_username,
+            claimant_name: swap.target_name,
+            ...(targetUser ? { user_id: targetUser.id } : {}),
+        }).eq("shift_id", swap.shift_id).eq("username", swap.requester_username).eq("status", "approved");
+    }
+}
+
 /* ─── page ─── */
 
 export default function AdminPage() {
@@ -78,7 +184,10 @@ export default function AdminPage() {
     const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-    const [assignDate, setAssignDate] = useState(() => new Date().toISOString().split("T")[0]);
+    const [assignDate, setAssignDate] = useState(() => {
+        const n = new Date();
+        return new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())).toISOString().split("T")[0];
+    });
     const [dateShifts, setDateShifts] = useState<any[]>([]);
     const [assignModal, setAssignModal] = useState<any>(null);
 
@@ -185,22 +294,29 @@ export default function AdminPage() {
 
     async function approveSwap(swap: PendingSwap) {
         setProcessing(swap.id);
-        const { data: targetUser } = await supabase
-            .from("users").select("id").eq("username", swap.target_username).maybeSingle();
-        await Promise.all([
-            supabase.from("swaps").update({ status: "approved" }).eq("id", swap.id),
-            supabase.from("claims")
-                .update({
-                    username: swap.target_username,
-                    claimant_name: swap.target_name,
-                    ...(targetUser ? { user_id: targetUser.id } : {}),
-                })
-                .eq("shift_id", swap.shift_id)
-                .eq("username", swap.requester_username)
-                .eq("status", "approved"),
-        ]);
-        setProcessing(null);
-        fetchData();
+        try {
+            if (swap.custom_start_at && swap.custom_end_at) {
+                await approvePartialSwap(swap);
+            } else {
+                const { data: targetUser } = await supabase
+                    .from("users").select("id").eq("username", swap.target_username).maybeSingle();
+                await Promise.all([
+                    supabase.from("swaps").update({ status: "approved" }).eq("id", swap.id),
+                    supabase.from("claims")
+                        .update({
+                            username: swap.target_username,
+                            claimant_name: swap.target_name,
+                            ...(targetUser ? { user_id: targetUser.id } : {}),
+                        })
+                        .eq("shift_id", swap.shift_id)
+                        .eq("username", swap.requester_username)
+                        .eq("status", "approved"),
+                ]);
+            }
+        } finally {
+            setProcessing(null);
+            fetchData();
+        }
     }
 
     async function rejectSwap(swap: PendingSwap) {
@@ -259,33 +375,41 @@ export default function AdminPage() {
             .map((k) => allSwaps.find((s) => s.id === k.slice(5)))
             .filter(Boolean) as PendingSwap[];
 
-        if (action === "approve") {
-            await Promise.all([
-                ...claims.map((c) => Promise.all([
-                    supabase.from("claims").update({ status: "approved" }).eq("id", c.id),
-                    supabase.from("shifts").update({ status: "taken" }).eq("id", c.shift_id),
-                ])),
-                ...swaps.map(async (s) => {
-                    const { data: tu } = await supabase.from("users").select("id").eq("username", s.target_username).maybeSingle();
-                    return Promise.all([
-                        supabase.from("swaps").update({ status: "approved" }).eq("id", s.id),
-                        supabase.from("claims").update({
-                            username: s.target_username,
-                            claimant_name: s.target_name,
-                            ...(tu ? { user_id: tu.id } : {}),
-                        }).eq("shift_id", s.shift_id).eq("username", s.requester_username).eq("status", "approved"),
-                    ]);
-                }),
-            ]);
-        } else {
-            await Promise.all([
-                ...claims.map((c) => supabase.from("claims").update({ status: "rejected" }).eq("id", c.id)),
-                ...swaps.map((s) => supabase.from("swaps").update({ status: "rejected" }).eq("id", s.id)),
-            ]);
+        try {
+            if (action === "approve") {
+                const wholeSwaps = swaps.filter((s) => !s.custom_start_at);
+                const partialSwaps = swaps.filter((s) => !!s.custom_start_at);
+                await Promise.all([
+                    ...claims.map((c) => Promise.all([
+                        supabase.from("claims").update({ status: "approved" }).eq("id", c.id),
+                        supabase.from("shifts").update({ status: "taken" }).eq("id", c.shift_id),
+                    ])),
+                    ...wholeSwaps.map(async (s) => {
+                        const { data: tu } = await supabase.from("users").select("id").eq("username", s.target_username).maybeSingle();
+                        return Promise.all([
+                            supabase.from("swaps").update({ status: "approved" }).eq("id", s.id),
+                            supabase.from("claims").update({
+                                username: s.target_username,
+                                claimant_name: s.target_name,
+                                ...(tu ? { user_id: tu.id } : {}),
+                            }).eq("shift_id", s.shift_id).eq("username", s.requester_username).eq("status", "approved"),
+                        ]);
+                    }),
+                ]);
+                for (const s of partialSwaps) {
+                    await approvePartialSwap(s);
+                }
+            } else {
+                await Promise.all([
+                    ...claims.map((c) => supabase.from("claims").update({ status: "rejected" }).eq("id", c.id)),
+                    ...swaps.map((s) => supabase.from("swaps").update({ status: "rejected" }).eq("id", s.id)),
+                ]);
+            }
+        } finally {
+            setProcessing(null);
+            setSelectedIds(new Set());
+            fetchData();
         }
-        setProcessing(null);
-        setSelectedIds(new Set());
-        fetchData();
     }
 
     const totalPending = userGroups.reduce((n, g) => n + g.claims.length + g.swaps.length, 0);
