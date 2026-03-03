@@ -7,7 +7,7 @@ import Link from "next/link";
 export default function TopBar() {
     const router = useRouter();
     const pathname = usePathname();
-    const [user, setUser] = useState<{ first_name: string; last_name: string; role?: string; email?: string | null; password_hash?: string | null } | null>(null);
+    const [user, setUser] = useState<{ first_name: string; last_name: string; role?: string; password_hash?: string | null } | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -32,7 +32,7 @@ export default function TopBar() {
         router.push("/login");
     };
 
-    const isProfileIncomplete = user && (!user.email || !user.password_hash);
+    const isProfileIncomplete = user && !user.password_hash;
 
     return (
         <div className="flex justify-between items-center px-6 py-4 border-b">
