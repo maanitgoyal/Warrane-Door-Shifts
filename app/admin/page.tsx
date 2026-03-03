@@ -267,6 +267,19 @@ export default function AdminPage() {
         setDateShifts(shiftsRaw.map((s) => ({ ...s, assignedTo: claimMap[s.id] ?? null })));
     }
 
+    async function deleteShift(shiftId: string) {
+        if (!window.confirm("Delete this shift permanently?")) return;
+        await supabase.from("claims").delete().eq("shift_id", shiftId);
+        await supabase.from("shifts").delete().eq("id", shiftId);
+        fetchDateShifts();
+    }
+
+    async function makeShiftOpen(shiftId: string) {
+        await supabase.from("claims").delete().eq("shift_id", shiftId).eq("status", "approved");
+        await supabase.from("shifts").update({ status: "open" }).eq("id", shiftId);
+        fetchDateShifts();
+    }
+
     function toggleExpand(username: string) {
         setExpandedUsers((prev) => {
             const next = new Set(prev);
@@ -624,12 +637,28 @@ export default function AdminPage() {
                                             }
                                         </div>
                                     </div>
-                                    <button
-                                        onClick={() => setAssignModal(shift)}
-                                        className="text-xs px-3 py-1.5 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700 cursor-pointer transition-colors flex-shrink-0"
-                                    >
-                                        Assign
-                                    </button>
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                        {shift.assignedTo && (
+                                            <button
+                                                onClick={() => makeShiftOpen(shift.id)}
+                                                className="text-xs px-3 py-1.5 rounded-lg border border-slate-600 text-slate-400 hover:text-amber-400 hover:border-amber-500/50 cursor-pointer transition-colors"
+                                            >
+                                                Make Open
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={() => setAssignModal(shift)}
+                                            className="text-xs px-3 py-1.5 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-700 cursor-pointer transition-colors"
+                                        >
+                                            Assign
+                                        </button>
+                                        <button
+                                            onClick={() => deleteShift(shift.id)}
+                                            className="text-xs px-3 py-1.5 rounded-lg border border-red-600/30 text-red-400 hover:bg-red-600/20 cursor-pointer transition-colors"
+                                        >
+                                            Delete
+                                        </button>
+                                    </div>
                                 </div>
                             );
                         })}
@@ -678,6 +707,74 @@ export default function AdminPage() {
     );
 }
 
+/* ─── Time helpers (module scope) ─── */
+
+function timeToMins(t: string): number {
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+}
+
+function minsToLabel(mins: number): string {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    const ampm = h >= 12 ? "PM" : "AM";
+    const h12 = h % 12 || 12;
+    return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+function parseTimeInput(input: string): string | null {
+    const s = input.trim().toLowerCase().replace(/\s+/g, "");
+    // HH:MM 24h
+    let m = s.match(/^(\d{1,2}):(\d{2})$/);
+    if (m) {
+        const h = +m[1], min = +m[2];
+        if (h <= 23 && min <= 59) return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    }
+    // H:MMam/pm
+    m = s.match(/^(\d{1,2}):(\d{2})(am|pm)$/);
+    if (m) {
+        let h = +m[1]; const min = +m[2]; const isPm = m[3] === "pm";
+        if (isPm && h !== 12) h += 12;
+        if (!isPm && h === 12) h = 0;
+        if (h <= 23 && min <= 59) return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    }
+    // Ham/pm (e.g. "6pm")
+    m = s.match(/^(\d{1,2})(am|pm)$/);
+    if (m) {
+        let h = +m[1]; const isPm = m[2] === "pm";
+        if (isPm && h !== 12) h += 12;
+        if (!isPm && h === 12) h = 0;
+        if (h <= 23) return `${String(h).padStart(2, "0")}:00`;
+    }
+    return null;
+}
+
+function TimeInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+    const toDisplay = (v: string) => v ? minsToLabel(timeToMins(v)) : "";
+    const [raw, setRaw] = useState(() => toDisplay(value));
+    useEffect(() => { setRaw(toDisplay(value)); }, [value]);
+    function handleBlur() {
+        const parsed = parseTimeInput(raw);
+        if (parsed) {
+            onChange(parsed);
+            setRaw(minsToLabel(timeToMins(parsed)));
+        } else {
+            setRaw(toDisplay(value));
+        }
+    }
+    return (
+        <input
+            type="text"
+            value={raw}
+            onChange={(e) => setRaw(e.target.value)}
+            onFocus={(e) => e.target.select()}
+            onBlur={handleBlur}
+            placeholder="e.g. 6:30 PM"
+            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500/60 placeholder:text-slate-500 transition-colors"
+        />
+    );
+}
+
 /* ─── Assign Modal ─── */
 
 function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () => void; onSuccess: () => void }) {
@@ -692,14 +789,22 @@ function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () =>
     const inputRef = useRef<HTMLInputElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
 
+    const [isPartial, setIsPartial] = useState(false);
+    const [partialStart, setPartialStart] = useState(shift.start_at.slice(11, 16));
+    const [partialEnd, setPartialEnd] = useState(shift.end_at.slice(11, 16));
+    const [existingClaim, setExistingClaim] = useState<any>(null);
+    const [step, setStep] = useState<"setup" | "preview">("setup");
+    const [timeError, setTimeError] = useState<string | null>(null);
+
+    const shiftStartTime = shift.start_at.slice(11, 16);
+    const shiftEndTime = shift.end_at.slice(11, 16);
+
     useEffect(() => {
-        // Fetch users
         supabase.from("users").select("id, first_name, last_name, username").then(({ data }) => {
             if (data) setUsers(data);
         });
-        // Fetch all shifts in the same weekly slot
         const dayOfWeek = new Date(shift.start_at).getUTCDay();
-        const startTime = shift.start_at.slice(11, 16); // "HH:MM"
+        const startTime = shift.start_at.slice(11, 16);
         const endTime = shift.end_at.slice(11, 16);
         supabase.from("shifts").select("id, start_at, end_at, status").order("start_at").then(({ data }) => {
             if (!data) return;
@@ -712,6 +817,9 @@ function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () =>
             setSlotShifts(same.length > 0 ? same : [shift]);
             setSelectedShiftIds([shift.id]);
         });
+        supabase.from("claims").select("id, username, claimant_name, user_id")
+            .eq("shift_id", shift.id).eq("status", "approved").maybeSingle()
+            .then(({ data }) => setExistingClaim(data ?? null));
     }, []);
 
     useEffect(() => {
@@ -744,126 +852,283 @@ function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () =>
         } else if (ev.key === "Escape") { setDropdownOpen(false); setHighlightedIndex(-1); }
     }
 
+    type PreviewSeg = { startMins: number; endMins: number; name: string | null; isNew?: boolean };
+
+    function computePreview(): PreviewSeg[] {
+        const ss = timeToMins(shiftStartTime);
+        const se = timeToMins(shiftEndTime);
+        const cs = timeToMins(partialStart);
+        const ce = timeToMins(partialEnd);
+        const newName = `${selectedUser.first_name} ${selectedUser.last_name}`;
+        const existingName = existingClaim?.claimant_name ?? null;
+        const segs: PreviewSeg[] = [];
+        if (cs > ss) segs.push({ startMins: ss, endMins: cs, name: existingName });
+        segs.push({ startMins: cs, endMins: ce, name: newName, isNew: true });
+        if (ce < se) segs.push({ startMins: ce, endMins: se, name: existingName });
+        return segs;
+    }
+
+    function goToPreview() {
+        if (!selectedUser) return;
+        if (isPartial) {
+            const ss = timeToMins(shiftStartTime);
+            const se = timeToMins(shiftEndTime);
+            const cs = timeToMins(partialStart);
+            const ce = timeToMins(partialEnd);
+            if (cs < ss || ce > se) { setTimeError(`Times must be within ${minsToLabel(ss)} – ${minsToLabel(se)}.`); return; }
+            if (cs >= ce) { setTimeError("Start must be before end."); return; }
+        }
+        setTimeError(null);
+        setStep("preview");
+    }
+
     async function assign() {
         if (!selectedUser || selectedShiftIds.length === 0) return;
         setSubmitting(true);
-        await Promise.all(selectedShiftIds.map(async (shiftId) => {
-            await Promise.all([
-                supabase.from("claims").update({ status: "rejected" }).eq("shift_id", shiftId).eq("status", "pending"),
-                supabase.from("claims").delete().eq("shift_id", shiftId).eq("status", "approved"),
-            ]);
-            await supabase.from("claims").insert({
-                user_id: selectedUser.id,
-                shift_id: shiftId,
-                status: "approved",
-                claimant_name: `${selectedUser.first_name} ${selectedUser.last_name}`,
-                username: selectedUser.username,
-            });
-            await supabase.from("shifts").update({ status: "taken" }).eq("id", shiftId);
-        }));
+        if (!isPartial) {
+            await Promise.all(selectedShiftIds.map(async (shiftId) => {
+                await supabase.from("claims").update({ status: "rejected" }).eq("shift_id", shiftId).eq("status", "pending");
+                await supabase.from("claims").delete().eq("shift_id", shiftId).eq("status", "approved");
+                await supabase.from("claims").insert({
+                    user_id: selectedUser.id,
+                    shift_id: shiftId,
+                    status: "approved",
+                    claimant_name: `${selectedUser.first_name} ${selectedUser.last_name}`,
+                    username: selectedUser.username,
+                });
+                await supabase.from("shifts").update({ status: "taken" }).eq("id", shiftId);
+            }));
+        } else {
+            await Promise.all(selectedShiftIds.map((shiftId) => assignPartial(shiftId)));
+        }
         setSubmitting(false);
         onSuccess();
     }
 
+    async function assignPartial(shiftId: string) {
+        const { data: orig } = await supabase.from("shifts").select("start_at, end_at, category").eq("id", shiftId).maybeSingle();
+        if (!orig) return;
+        const dateStr = orig.start_at.slice(0, 10);
+        const customStart = `${dateStr}T${partialStart}:00`;
+        const customEnd = `${dateStr}T${partialEnd}:00`;
+        const ss = timeToMins(orig.start_at.slice(11, 16));
+        const se = timeToMins(orig.end_at.slice(11, 16));
+        const cs = timeToMins(partialStart);
+        const ce = timeToMins(partialEnd);
+        const hasBefore = cs > ss;
+        const hasAfter = ce < se;
+        const { data: existingClm } = await supabase.from("claims").select("id, username, claimant_name, user_id")
+            .eq("shift_id", shiftId).eq("status", "approved").maybeSingle();
+        await supabase.from("claims").update({ status: "rejected" }).eq("shift_id", shiftId).eq("status", "pending");
+        if (!hasBefore && !hasAfter) {
+            await supabase.from("claims").delete().eq("shift_id", shiftId).eq("status", "approved");
+            await supabase.from("claims").insert({ shift_id: shiftId, user_id: selectedUser.id, username: selectedUser.username, claimant_name: `${selectedUser.first_name} ${selectedUser.last_name}`, status: "approved" });
+            await supabase.from("shifts").update({ status: "taken" }).eq("id", shiftId);
+            return;
+        }
+        const cat = orig.category ?? null;
+        const { data: newShifts } = await supabase.from("shifts")
+            .insert({ start_at: customStart, end_at: customEnd, status: "taken", ...(cat ? { category: cat } : {}) })
+            .select("id");
+        const newShiftId = newShifts?.[0]?.id ?? null;
+        if (!newShiftId) {
+            await supabase.from("claims").delete().eq("shift_id", shiftId).eq("status", "approved");
+            await supabase.from("claims").insert({ shift_id: shiftId, user_id: selectedUser.id, username: selectedUser.username, claimant_name: `${selectedUser.first_name} ${selectedUser.last_name}`, status: "approved" });
+            await supabase.from("shifts").update({ status: "taken" }).eq("id", shiftId);
+            return;
+        }
+        await supabase.from("claims").insert({ shift_id: newShiftId, user_id: selectedUser.id, username: selectedUser.username, claimant_name: `${selectedUser.first_name} ${selectedUser.last_name}`, status: "approved" });
+        if (hasBefore && hasAfter) {
+            await supabase.from("shifts").update({ end_at: customStart }).eq("id", shiftId);
+            const { data: afterShifts } = await supabase.from("shifts")
+                .insert({ start_at: customEnd, end_at: orig.end_at, status: existingClm ? "taken" : "open", ...(cat ? { category: cat } : {}) })
+                .select("id");
+            const afterId = afterShifts?.[0]?.id ?? null;
+            if (afterId && existingClm) {
+                await supabase.from("claims").insert({ shift_id: afterId, username: existingClm.username, claimant_name: existingClm.claimant_name, status: "approved", user_id: existingClm.user_id });
+            }
+        } else if (hasBefore) {
+            await supabase.from("shifts").update({ end_at: customStart }).eq("id", shiftId);
+        } else {
+            await supabase.from("shifts").update({ start_at: customEnd }).eq("id", shiftId);
+        }
+    }
+
+    const previewSegs = step === "preview" && selectedUser && isPartial ? computePreview() : null;
+    const newName = selectedUser ? `${selectedUser.first_name} ${selectedUser.last_name}` : "";
+
     return (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-[26rem] max-h-[90vh] overflow-y-auto" onClick={(ev) => ev.stopPropagation()}>
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-[28rem] max-h-[90vh] overflow-y-auto" onClick={(ev) => ev.stopPropagation()}>
                 <div className="flex justify-between items-start mb-5">
                     <div>
                         <h2 className="text-white font-semibold text-lg">Assign Shift</h2>
-                        <p className="text-slate-400 text-sm mt-0.5">
-                            {DAY_FULL[s.getUTCDay()]} · {formatUTCTime(s)} – {formatUTCTime(e)}
-                        </p>
+                        <p className="text-slate-400 text-sm mt-0.5">{DAY_FULL[s.getUTCDay()]} · {formatUTCTime(s)} – {formatUTCTime(e)}</p>
                         <p className="text-slate-500 text-xs mt-0.5">{getTriWeekLabel(s)}</p>
                     </div>
                     <button onClick={onClose} className="text-slate-500 hover:text-white text-xl cursor-pointer">✕</button>
                 </div>
 
-                {shift.assignedTo && (
-                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-2.5 mb-4 text-amber-400 text-xs">
-                        Currently assigned to <span className="font-semibold">{shift.assignedTo.claimant_name}</span>. Assigning will override existing assignments.
-                    </div>
-                )}
+                {step === "setup" ? (
+                    <>
+                        {existingClaim && (
+                            <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-2.5 mb-4 text-amber-400 text-xs">
+                                Currently assigned to <span className="font-semibold">{existingClaim.claimant_name}</span>. Assigning will affect this.
+                            </div>
+                        )}
 
-                <p className="text-slate-400 text-sm mb-2">Assign to:</p>
-                <div className="relative mb-5">
-                    <input
-                        ref={inputRef}
-                        type="text"
-                        placeholder="Search by name…"
-                        value={selectedUser ? `${selectedUser.first_name} ${selectedUser.last_name}` : search}
-                        onChange={(ev) => { setSearch(ev.target.value); setSelectedUser(null); setDropdownOpen(true); setHighlightedIndex(-1); }}
-                        onFocus={() => setDropdownOpen(true)}
-                        onKeyDown={handleKeyDown}
-                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white placeholder:text-slate-500 focus:outline-none focus:border-slate-500 text-sm"
-                    />
-                    {selectedUser && (
-                        <button onClick={() => { setSelectedUser(null); setSearch(""); inputRef.current?.focus(); }}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white cursor-pointer">✕</button>
-                    )}
-                    {dropdownOpen && !selectedUser && search.length > 0 && (
-                        <div ref={listRef} className="absolute left-0 right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded-xl overflow-hidden z-10 max-h-48 overflow-y-auto shadow-lg">
-                            {filtered.length > 0 ? filtered.map((u, idx) => (
-                                <button key={u.username}
-                                    onMouseDown={() => { setSelectedUser(u); setDropdownOpen(false); setHighlightedIndex(-1); }}
-                                    onMouseEnter={() => setHighlightedIndex(idx)}
-                                    className={`w-full text-left px-4 py-2.5 text-sm text-white cursor-pointer transition-colors ${idx === highlightedIndex ? "bg-slate-600" : "hover:bg-slate-700"}`}
-                                >
-                                    {u.first_name} {u.last_name}
-                                    <span className="text-slate-500 ml-2 text-xs">{u.username}</span>
-                                </button>
-                            )) : (
-                                <div className="px-4 py-3 text-slate-500 text-sm">No users found.</div>
+                        <p className="text-slate-400 text-sm mb-2">Assign to:</p>
+                        <div className="relative mb-4">
+                            <input
+                                ref={inputRef}
+                                type="text"
+                                placeholder="Search by name…"
+                                value={selectedUser ? `${selectedUser.first_name} ${selectedUser.last_name}` : search}
+                                onChange={(ev) => { setSearch(ev.target.value); setSelectedUser(null); setDropdownOpen(true); setHighlightedIndex(-1); }}
+                                onFocus={() => setDropdownOpen(true)}
+                                onKeyDown={handleKeyDown}
+                                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white placeholder:text-slate-500 focus:outline-none focus:border-slate-500 text-sm"
+                            />
+                            {selectedUser && (
+                                <button onClick={() => { setSelectedUser(null); setSearch(""); inputRef.current?.focus(); }}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white cursor-pointer">✕</button>
+                            )}
+                            {dropdownOpen && !selectedUser && search.length > 0 && (
+                                <div ref={listRef} className="absolute left-0 right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded-xl overflow-hidden z-10 max-h-48 overflow-y-auto shadow-lg">
+                                    {filtered.length > 0 ? filtered.map((u, idx) => (
+                                        <button key={u.username}
+                                            onMouseDown={() => { setSelectedUser(u); setDropdownOpen(false); setHighlightedIndex(-1); }}
+                                            onMouseEnter={() => setHighlightedIndex(idx)}
+                                            className={`w-full text-left px-4 py-2.5 text-sm text-white cursor-pointer transition-colors ${idx === highlightedIndex ? "bg-slate-600" : "hover:bg-slate-700"}`}
+                                        >
+                                            {u.first_name} {u.last_name}
+                                            <span className="text-slate-500 ml-2 text-xs">{u.username}</span>
+                                        </button>
+                                    )) : (
+                                        <div className="px-4 py-3 text-slate-500 text-sm">No users found.</div>
+                                    )}
+                                </div>
                             )}
                         </div>
-                    )}
-                </div>
 
-                {/* Week selector */}
-                {slotShifts.length > 1 && (
-                    <>
-                        <div className="flex items-center justify-between mb-2">
-                            <p className="text-slate-400 text-sm">Select weeks:</p>
-                            <button
-                                onClick={() => setSelectedShiftIds(
-                                    selectedShiftIds.length === slotShifts.length ? [shift.id] : slotShifts.map((s) => s.id)
-                                )}
-                                className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
-                            >
-                                {selectedShiftIds.length === slotShifts.length ? "Deselect all" : "Select all"}
-                            </button>
+                        {/* Partial shift toggle */}
+                        <div
+                            className="flex items-center gap-3 mb-4 cursor-pointer select-none"
+                            onClick={() => { setIsPartial((v) => !v); setTimeError(null); setPartialStart(shiftStartTime); setPartialEnd(shiftEndTime); }}
+                        >
+                            <div className={`relative w-10 h-6 rounded-full transition-colors flex-shrink-0 ${isPartial ? "bg-indigo-600" : "bg-slate-700"}`}>
+                                <span className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${isPartial ? "translate-x-4" : "translate-x-0"}`} />
+                            </div>
+                            <span className="text-slate-400 text-sm">Partial shift</span>
                         </div>
-                        <div className="flex flex-col gap-1.5 mb-5 max-h-48 overflow-y-auto">
-                            {slotShifts.map((sl) => {
-                                const slDate = new Date(sl.start_at);
-                                const label = getTriWeekLabel(slDate);
-                                const dateStr = slDate.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "UTC" });
-                                return (
-                                    <label key={sl.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-800 cursor-pointer hover:bg-slate-700 transition-colors">
-                                        <input
-                                            type="checkbox"
-                                            checked={selectedShiftIds.includes(sl.id)}
-                                            onChange={() => toggleShift(sl.id)}
-                                            className="accent-indigo-500 w-4 h-4"
-                                        />
-                                        <span className="text-white text-sm font-medium flex-1">{label}</span>
-                                        <span className="text-slate-400 text-xs">{dateStr}</span>
-                                        {sl.status === "taken" && <span className="text-red-400 text-xs">taken</span>}
-                                        {sl.status === "open" && <span className="text-green-400 text-xs">open</span>}
-                                    </label>
-                                );
-                            })}
+
+                        {isPartial && (
+                            <div className="flex items-center gap-2 mb-4">
+                                <div className="flex-1">
+                                    <label className="text-xs text-slate-500 mb-1 block">Start</label>
+                                    <TimeInput
+                                        value={partialStart}
+                                        onChange={(v) => { setPartialStart(v); setTimeError(null); }}
+                                    />
+                                </div>
+                                <span className="text-slate-500 mt-5 text-lg">→</span>
+                                <div className="flex-1">
+                                    <label className="text-xs text-slate-500 mb-1 block">End</label>
+                                    <TimeInput
+                                        value={partialEnd}
+                                        onChange={(v) => { setPartialEnd(v); setTimeError(null); }}
+                                    />
+                                </div>
+                            </div>
+                        )}
+
+                        {timeError && <p className="text-red-400 text-xs mb-3">{timeError}</p>}
+
+                        {/* Week selector */}
+                        {slotShifts.length > 1 && (
+                            <>
+                                <div className="flex items-center justify-between mb-2">
+                                    <p className="text-slate-400 text-sm">Select weeks:</p>
+                                    <button
+                                        onClick={() => setSelectedShiftIds(selectedShiftIds.length === slotShifts.length ? [shift.id] : slotShifts.map((sl) => sl.id))}
+                                        className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
+                                    >
+                                        {selectedShiftIds.length === slotShifts.length ? "Deselect all" : "Select all"}
+                                    </button>
+                                </div>
+                                <div className="flex flex-col gap-1.5 mb-4 max-h-48 overflow-y-auto">
+                                    {slotShifts.map((sl) => {
+                                        const slDate = new Date(sl.start_at);
+                                        const label = getTriWeekLabel(slDate);
+                                        const dateStr = slDate.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "UTC" });
+                                        return (
+                                            <label key={sl.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-800 cursor-pointer hover:bg-slate-700 transition-colors">
+                                                <input type="checkbox" checked={selectedShiftIds.includes(sl.id)} onChange={() => toggleShift(sl.id)} className="accent-indigo-500 w-4 h-4" />
+                                                <span className="text-white text-sm font-medium flex-1">{label}</span>
+                                                <span className="text-slate-400 text-xs">{dateStr}</span>
+                                                {sl.status === "taken" && <span className="text-red-400 text-xs">taken</span>}
+                                                {sl.status === "open" && <span className="text-green-400 text-xs">open</span>}
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            </>
+                        )}
+
+                        <button
+                            onClick={goToPreview}
+                            disabled={!selectedUser || selectedShiftIds.length === 0}
+                            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold py-2 rounded-xl cursor-pointer transition-colors"
+                        >
+                            Preview →
+                        </button>
+                    </>
+                ) : (
+                    <>
+                        <p className="text-slate-400 text-sm mb-3">
+                            {isPartial ? "Shift preview after assignment:" : "Confirm assignment:"}
+                        </p>
+
+                        {isPartial && previewSegs ? (
+                            <div className="rounded-xl overflow-hidden border border-slate-700 mb-5">
+                                {previewSegs.map((seg, i) => (
+                                    <div key={i} className={`flex items-center gap-3 px-4 py-3 ${i < previewSegs.length - 1 ? "border-b border-slate-700" : ""} ${seg.isNew ? "bg-indigo-600/15" : "bg-slate-800"}`}>
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-slate-400 text-xs">{minsToLabel(seg.startMins)} → {minsToLabel(seg.endMins)}</p>
+                                            <p className={`text-sm font-semibold mt-0.5 truncate ${seg.isNew ? "text-indigo-300" : seg.name ? "text-white" : "text-slate-500 italic"}`}>
+                                                {seg.name ?? "Unassigned"}
+                                            </p>
+                                        </div>
+                                        {seg.isNew && <span className="text-[10px] bg-indigo-500 text-white px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide flex-shrink-0">New</span>}
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 mb-5">
+                                <p className="text-slate-400 text-xs">{formatUTCTime(s)} → {formatUTCTime(e)}</p>
+                                <p className="text-white text-sm font-semibold mt-0.5">{newName}</p>
+                                {existingClaim && <p className="text-amber-400 text-xs mt-1.5">Replaces: {existingClaim.claimant_name}</p>}
+                                {selectedShiftIds.length > 1 && <p className="text-slate-500 text-xs mt-1">Applied to {selectedShiftIds.length} weeks</p>}
+                            </div>
+                        )}
+
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => setStep("setup")}
+                                className="flex-1 py-2 rounded-xl border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 text-sm cursor-pointer transition-colors"
+                            >
+                                ← Back
+                            </button>
+                            <button
+                                onClick={assign}
+                                disabled={submitting}
+                                className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold py-2 rounded-xl cursor-pointer transition-colors"
+                            >
+                                {submitting ? "Assigning…" : "Confirm"}
+                            </button>
                         </div>
                     </>
                 )}
-
-                <button
-                    onClick={assign}
-                    disabled={submitting || !selectedUser || selectedShiftIds.length === 0}
-                    className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold py-2 rounded-xl cursor-pointer transition-colors"
-                >
-                    {submitting ? "Assigning…" : `Assign ${selectedShiftIds.length} Shift${selectedShiftIds.length !== 1 ? "s" : ""}`}
-                </button>
             </div>
         </div>
     );
