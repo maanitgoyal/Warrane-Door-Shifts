@@ -340,7 +340,10 @@ export default function Calendar() {
                         <div className="relative rounded-2xl p-6 bg-slate-900 border border-slate-800 overflow-hidden">
                             {shifts.map((shift) => {
                                 const height = (shift.end - shift.start) * HOUR_HEIGHT;
-                                const isSmall = height < 36;
+                                const isSmall = height < 40;
+                                const dateStr = selectedDate.toISOString().split("T")[0];
+                                const displayEndMs = new Date(`${dateStr}T00:00:00Z`).getTime() + shift.end * 3600000;
+                                const isPast = displayEndMs < Date.now();
                                 const isUserShift = userShiftIds.has(shift.id);
                                 const hasApprovedClaim = !!shift.approvedClaim;
                                 const claimantName = shift.approvedClaim?.claimant_name;
@@ -348,9 +351,9 @@ export default function Calendar() {
                                 const isPendingClaim = !isUserShift && !hasApprovedClaim && !!shift.pendingClaim && !isMyPendingClaim;
                                 const hasPendingSwap = !!shift.pendingSwap;
 
-                                // Use approvedClaim as the source of truth — don't rely solely on shift.status
                                 let bgColor: string;
-                                if (isUserShift) bgColor = "bg-violet-600 cursor-pointer";
+                                if (isPast) bgColor = "bg-slate-700 cursor-default";
+                                else if (isUserShift) bgColor = "bg-violet-600 cursor-pointer";
                                 else if (hasApprovedClaim && hasPendingSwap) bgColor = "bg-sky-700 cursor-default";
                                 else if (hasApprovedClaim) bgColor = "bg-sky-600 cursor-default";
                                 else if (isMyPendingClaim) bgColor = "bg-violet-900 cursor-default";
@@ -358,45 +361,37 @@ export default function Calendar() {
                                 else if (shift.status === "open") bgColor = "bg-green-600 cursor-pointer";
                                 else bgColor = "bg-slate-600 cursor-default";
 
-                                let sublabel: string;
-                                if (isUserShift && hasPendingSwap) sublabel = `Swap → ${shift.pendingSwap.target_name}`;
-                                else if (isUserShift) sublabel = "MY SHIFT — tap to swap";
-                                else if (hasApprovedClaim && hasPendingSwap) sublabel = `${claimantName} → ${shift.pendingSwap.target_name}`;
-                                else if (hasApprovedClaim) sublabel = claimantName!;
-                                else if (isMyPendingClaim) sublabel = "AWAITING APPROVAL";
-                                else if (isPendingClaim) sublabel = `Pending: ${shift.pendingClaim.claimant_name}`;
-                                else sublabel = shift.status.toUpperCase();
+                                let sublabel = "";
+                                if (hasApprovedClaim && hasPendingSwap) sublabel = `${claimantName} → ${shift.pendingSwap.target_name}`;
+                                else if (hasApprovedClaim) sublabel = claimantName ?? "";
+                                else if (isMyPendingClaim || isPendingClaim) sublabel = shift.pendingClaim?.claimant_name ?? "";
+                                else if (shift.status === "open") sublabel = "Open";
 
-                                // Always show the full shift times (not clipped display times)
-                                const timeLabel = `${formatUTCTime(new Date(shift.start_at))} – ${formatUTCTime(new Date(shift.end_at))}`;
+                                // Use display-clipped times (e.g. 11PM–12AM or 12AM–7AM for overnight)
+                                const displayTimeLabel = `${formatHourDecimal(shift.start)} -- ${formatHourDecimal(shift.end)}`;
 
                                 return (
                                     <div
                                         key={shift.id}
                                         onClick={() => {
+                                            if (isPast) return;
                                             if (isUserShift) openSwapModal(shift);
                                             else if (!hasApprovedClaim && !isPendingClaim && !isMyPendingClaim) openClaimModal(shift);
                                         }}
-                                        className={`absolute left-16 right-4 rounded-xl shadow-lg text-white ${bgColor}`}
+                                        className={`absolute left-16 right-4 rounded-xl shadow-lg text-white overflow-hidden ${bgColor}`}
                                         style={{
                                             top: `${shift.start * HOUR_HEIGHT}px`,
                                             height: `${Math.max(height, 22)}px`,
-                                            padding: "6px 10px",
+                                            padding: "3px 8px",
                                             display: "flex",
-                                            flexDirection: "column",
-                                            justifyContent: "center",
+                                            alignItems: "center",
+                                            overflow: "hidden",
                                         }}
                                     >
-                                        {isSmall ? (
-                                            <div className="font-semibold text-xs leading-tight truncate">{timeLabel}</div>
-                                        ) : (
-                                            <>
-                                                <div className="font-semibold text-sm leading-tight">{timeLabel}</div>
-                                                <div className="opacity-90 text-xs leading-tight">{sublabel}</div>
-                                                {shift.isFromPrevDay && <div className="opacity-60 text-xs leading-none mt-0.5">← overnight</div>}
-                                                {shift.crossesMidnight && <div className="opacity-60 text-xs leading-none mt-0.5">→ continues next day</div>}
-                                            </>
-                                        )}
+                                        <div className={`flex items-center gap-1 min-w-0 leading-tight ${isSmall ? "text-[10px]" : "text-xs"}`}>
+                                            <span className="font-semibold flex-shrink-0">{displayTimeLabel}</span>
+                                            {sublabel && <span className="opacity-80 truncate">· {sublabel}</span>}
+                                        </div>
                                     </div>
                                 );
                             })}
@@ -679,6 +674,16 @@ function formatHour(hour: number) {
     const ampm = hour >= 12 ? "PM" : "AM";
     const h = hour % 12 || 12;
     return `${h}${ampm}`;
+}
+
+// Formats a decimal hour (e.g. 23 → "11:00 PM", 24 → "12:00 AM", 0 → "12:00 AM")
+function formatHourDecimal(h: number): string {
+    if (h >= 24) return "12:00 AM";
+    const hours = Math.floor(h);
+    const minutes = Math.round((h - hours) * 60);
+    const ampm = hours >= 12 ? "PM" : "AM";
+    const hour12 = hours % 12 || 12;
+    return `${hour12}:${String(minutes).padStart(2, "0")} ${ampm}`;
 }
 
 function getWeekDates(baseDate: Date) {

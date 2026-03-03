@@ -3,12 +3,21 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase";
 
 const TRIMESTERS = [
     { label: "T1", start: new Date(Date.UTC(2026, 1, 8)) },
     { label: "T2", start: new Date(Date.UTC(2026, 4, 25)) },
 ];
+
+function getCurrentTriStart(): Date {
+    const now = new Date();
+    for (let i = TRIMESTERS.length - 1; i >= 0; i--) {
+        if (now >= TRIMESTERS[i].start) return TRIMESTERS[i].start;
+    }
+    return TRIMESTERS[0].start;
+}
 
 function getTriWeekLabel(date: Date): string {
     for (const tri of TRIMESTERS) {
@@ -49,6 +58,10 @@ export default function AdminPayoutsPage() {
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState("");
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+    const triStart = getCurrentTriStart();
+    const [dateFrom, setDateFrom] = useState(() => triStart.toISOString().split("T")[0]);
+    const [dateTo, setDateTo] = useState(() => new Date().toISOString().split("T")[0]);
 
     useEffect(() => {
         const stored = localStorage.getItem("shift_user");
@@ -105,14 +118,79 @@ export default function AdminPayoutsPage() {
         });
     }
 
-    const filtered = payoutGroups.filter((g) =>
-        g.name.toLowerCase().includes(search.toLowerCase())
-    );
+    // Apply search + date range filter
+    const fromMs = new Date(dateFrom + "T00:00:00Z").getTime();
+    const toMs = new Date(dateTo + "T23:59:59Z").getTime();
+
+    const filtered = payoutGroups
+        .map((g) => ({
+            ...g,
+            shifts: g.shifts.filter((sh) => {
+                const t = new Date(sh.start_at).getTime();
+                return t >= fromMs && t <= toMs;
+            }),
+        }))
+        .filter((g) => g.shifts.length > 0 && g.name.toLowerCase().includes(search.toLowerCase()));
 
     const grandTotal = filtered.reduce(
         (sum, g) => sum + g.shifts.reduce((s, sh) => s + calculatePay(sh.start_at, sh.end_at), 0),
         0
     );
+
+    function exportToExcel() {
+        const rows: (string | number)[][] = [];
+
+        // Header
+        rows.push(["Name", "Date", "Day", "Week", "Time", "Type", "Pay (AUD)"]);
+
+        for (const group of filtered) {
+            const sorted = [...group.shifts].sort(
+                (a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime()
+            );
+            let firstRow = true;
+            for (const sh of sorted) {
+                const night = isNightShift(sh.start_at, sh.end_at);
+                const pay = calculatePay(sh.start_at, sh.end_at);
+                const start = new Date(sh.start_at);
+                const end = new Date(sh.end_at);
+                const hours = !night ? (end.getTime() - start.getTime()) / 3600000 : null;
+                rows.push([
+                    firstRow ? group.name : "",
+                    start.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }),
+                    DAY[start.getUTCDay()],
+                    getTriWeekLabel(start),
+                    `${formatUTCTime(start)} – ${formatUTCTime(end)}`,
+                    night ? "Night shift" : `${hours}h × $20/hr`,
+                    pay,
+                ]);
+                firstRow = false;
+            }
+            // Subtotal
+            const total = group.shifts.reduce((s, sh) => s + calculatePay(sh.start_at, sh.end_at), 0);
+            rows.push(["", "", "", "", "", "Subtotal", total]);
+            rows.push([]);
+        }
+
+        // Grand total
+        rows.push(["", "", "", "", "", "Grand Total", grandTotal]);
+
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+
+        // Column widths
+        ws["!cols"] = [
+            { wch: 22 }, // Name
+            { wch: 16 }, // Date
+            { wch: 6 },  // Day
+            { wch: 10 }, // Week
+            { wch: 20 }, // Time
+            { wch: 18 }, // Type
+            { wch: 12 }, // Pay
+        ];
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Payouts");
+        XLSX.writeFile(wb, `payouts-${dateFrom}-to-${dateTo}.xlsx`);
+    }
 
     return (
         <div className="p-6 max-w-4xl mx-auto">
@@ -139,22 +217,58 @@ export default function AdminPayoutsPage() {
                 </div>
             </div>
 
-            {/* Search */}
-            <div className="mb-6">
+            {/* Filters row */}
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+                {/* Date range picker */}
+                <div className="flex items-center bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+                    <div className="flex items-center gap-2 px-4 py-2.5">
+                        <span className="text-slate-500 text-xs font-medium uppercase tracking-wide">From</span>
+                        <input
+                            type="date"
+                            value={dateFrom}
+                            max={dateTo}
+                            onChange={(e) => setDateFrom(e.target.value)}
+                            className="bg-transparent text-white text-sm focus:outline-none cursor-pointer"
+                        />
+                    </div>
+                    <div className="text-slate-600 px-1 select-none">→</div>
+                    <div className="flex items-center gap-2 px-4 py-2.5">
+                        <span className="text-slate-500 text-xs font-medium uppercase tracking-wide">To</span>
+                        <input
+                            type="date"
+                            value={dateTo}
+                            min={dateFrom}
+                            onChange={(e) => setDateTo(e.target.value)}
+                            className="bg-transparent text-white text-sm focus:outline-none cursor-pointer"
+                        />
+                    </div>
+                </div>
+
+                {/* Search */}
                 <input
                     type="text"
                     placeholder="Search by name..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-slate-500 text-sm"
+                    className="flex-1 min-w-40 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-slate-500 text-sm"
                 />
+
+                {/* Export button */}
+                {!loading && filtered.length > 0 && (
+                    <button
+                        onClick={exportToExcel}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium cursor-pointer transition-colors flex-shrink-0"
+                    >
+                        <span>↓</span> Export Excel
+                    </button>
+                )}
             </div>
 
             {loading ? (
                 <p className="text-slate-500 text-sm">Loading...</p>
             ) : filtered.length === 0 ? (
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center">
-                    <p className="text-slate-400">{search ? "No results found." : "No completed shifts yet."}</p>
+                    <p className="text-slate-400">{search ? "No results found." : "No completed shifts for this period."}</p>
                 </div>
             ) : (
                 <div className="flex flex-col gap-3">
