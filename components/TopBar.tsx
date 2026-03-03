@@ -60,12 +60,13 @@ export default function TopBar() {
                 Warrane Door Shifts {new Date().getFullYear()}
             </Link>
 
+            <div className="flex items-center gap-3">
             {user && (
                 <nav className="flex gap-1">
                     {[
                         { href: "/", label: "Calendar" },
-                        { href: "/my-shifts", label: "My Shifts" },
-                        ...(user?.role !== "staff" ? [{ href: "/payouts", label: "Payouts" }] : []),
+                        ...(user?.role !== "admin" ? [{ href: "/my-shifts", label: "My Shifts" }] : []),
+                        ...(user?.role !== "admin" && user?.role !== "staff" ? [{ href: "/payouts", label: "Payouts" }] : []),
                         { href: "/profile", label: "Profile" },
                         ...(user?.role === "admin" ? [{ href: "/admin", label: "Admin" }] : []),
                     ].map(({ href, label }) => (
@@ -135,6 +136,7 @@ export default function TopBar() {
                     </div>
                 </div>
             )}
+            </div>
         </div>
         {showPasswordReminder && (
             <div className="flex items-center justify-between gap-3 bg-amber-500/10 border-b border-amber-500/25 px-6 py-2.5">
