@@ -316,9 +316,8 @@ export default function Calendar() {
 
                         {/* CURRENTLY ON DOOR */}
                         {selectedDate.getTime() === localToUTCMidnight().getTime() && (() => {
-                            // Use "fake UTC" now: local clock hours stored as UTC, matching how shifts are stored
-                            const _now = new Date();
-                            const nowMs = Date.UTC(_now.getFullYear(), _now.getMonth(), _now.getDate(), _now.getHours(), _now.getMinutes(), _now.getSeconds());
+                            const _sp = getSydneyParts();
+                            const nowMs = Date.UTC(_sp.year, _sp.month, _sp.day, _sp.hour, _sp.minute, _sp.second);
                             const active = shifts.find(
                                 (s) => nowMs >= new Date(s.start_at).getTime() && nowMs < new Date(s.end_at).getTime()
                             );
@@ -340,9 +339,8 @@ export default function Calendar() {
                                 const isSmall = height < 40;
                                 const dateStr = selectedDate.toISOString().split("T")[0];
                                 const displayEndMs = new Date(`${dateStr}T00:00:00Z`).getTime() + shift.end * 3600000;
-                                // Compare against fake-UTC now (local clock hours as UTC) to match shift storage
-                                const _n = new Date();
-                                const fakeNowMs = Date.UTC(_n.getFullYear(), _n.getMonth(), _n.getDate(), _n.getHours(), _n.getMinutes(), _n.getSeconds());
+                                const _sp = getSydneyParts();
+                                const fakeNowMs = Date.UTC(_sp.year, _sp.month, _sp.day, _sp.hour, _sp.minute, _sp.second);
                                 const isPast = displayEndMs < fakeNowMs;
                                 const isUserShift = userShiftIds.has(shift.id);
                                 const hasApprovedClaim = !!shift.approvedClaim;
@@ -398,10 +396,8 @@ export default function Calendar() {
 
                             {/* CURRENT TIME LINE */}
                             {selectedDate.getTime() === localToUTCMidnight().getTime() && (() => {
-                                const now = new Date();
-                                // Shifts are stored with UTC hours == local hours ("fake UTC"),
-                                // so the current-time line must also use local hours.
-                                const top = (now.getHours() + now.getMinutes() / 60) * HOUR_HEIGHT;
+                                const { hour, minute } = getSydneyParts();
+                                const top = (hour + minute / 60) * HOUR_HEIGHT;
                                 return (
                                     <div
                                         className="absolute left-0 right-0 flex items-center pointer-events-none z-10"
@@ -638,11 +634,24 @@ function MiniCalendar({ selectedDate, onSelect }: any) {
 
 /* ---------------- HELPERS ---------------- */
 
-// Creates a UTC-midnight Date from the *local* calendar date, so that
-// toISOString().split("T")[0] always returns the user's local date string
-// regardless of timezone (fixes the Vercel UTC vs AEST display mismatch).
+// Extracts date/time components in Australia/Sydney timezone.
+// Works correctly on any server or browser regardless of device timezone.
+function getSydneyParts(d: Date = new Date()) {
+    const parts = new Intl.DateTimeFormat("en-AU", {
+        timeZone: "Australia/Sydney",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+    }).formatToParts(d);
+    const get = (type: string) => parseInt(parts.find(p => p.type === type)!.value);
+    return { year: get("year"), month: get("month") - 1, day: get("day"), hour: get("hour") % 24, minute: get("minute"), second: get("second") };
+}
+
+// Creates a UTC-midnight Date from the Sydney calendar date, so that
+// toISOString().split("T")[0] always returns the Sydney date string.
 function localToUTCMidnight(d: Date = new Date()): Date {
-    return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    const { year, month, day } = getSydneyParts(d);
+    return new Date(Date.UTC(year, month, day));
 }
 
 const TRIMESTERS = [
