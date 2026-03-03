@@ -353,12 +353,12 @@ export default function Calendar() {
 
                                 let bgColor: string;
                                 if (isPast) bgColor = "bg-slate-700 cursor-default";
-                                else if (isUserShift) bgColor = "bg-violet-600 cursor-pointer";
-                                else if (hasApprovedClaim && hasPendingSwap) bgColor = "bg-sky-700 cursor-default";
-                                else if (hasApprovedClaim) bgColor = "bg-sky-600 cursor-default";
-                                else if (isMyPendingClaim) bgColor = "bg-violet-900 cursor-default";
+                                else if (isUserShift) bgColor = "bg-green-600 cursor-pointer";
+                                else if (hasApprovedClaim && hasPendingSwap) bgColor = "bg-violet-600 cursor-default";
+                                else if (hasApprovedClaim) bgColor = "bg-green-700 cursor-default";
+                                else if (isMyPendingClaim) bgColor = "bg-amber-500 cursor-default";
                                 else if (isPendingClaim) bgColor = "bg-amber-500 cursor-default";
-                                else if (shift.status === "open") bgColor = "bg-green-600 cursor-pointer";
+                                else if (shift.status === "open") bgColor = "bg-blue-600 cursor-pointer";
                                 else bgColor = "bg-slate-600 cursor-default";
 
                                 let sublabel = "";
@@ -388,9 +388,9 @@ export default function Calendar() {
                                             overflow: "hidden",
                                         }}
                                     >
-                                        <div className={`flex items-center gap-1 min-w-0 leading-tight ${isSmall ? "text-[10px]" : "text-xs"}`}>
-                                            <span className="font-semibold flex-shrink-0">{displayTimeLabel}</span>
-                                            {sublabel && <span className="opacity-80 truncate">· {sublabel}</span>}
+                                        <div className="flex items-center gap-1 min-w-0 leading-tight">
+                                            <span className={`font-semibold flex-shrink-0 ${isSmall ? "text-[10px]" : "text-xs"}`}>{displayTimeLabel}</span>
+                                            {sublabel && <span className={`font-bold truncate ${isSmall ? "text-[11px]" : "text-[13px]"}`}>· {sublabel}</span>}
                                         </div>
                                     </div>
                                 );
