@@ -7,7 +7,7 @@ import Link from "next/link";
 export default function TopBar() {
     const router = useRouter();
     const pathname = usePathname();
-    const [user, setUser] = useState<{ first_name: string; last_name: string; role?: string } | null>(null);
+    const [user, setUser] = useState<{ first_name: string; last_name: string; role?: string; email?: string | null; password_hash?: string | null } | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -32,6 +32,8 @@ export default function TopBar() {
         router.push("/login");
     };
 
+    const isProfileIncomplete = user && (!user.email || !user.password_hash);
+
     return (
         <div className="flex justify-between items-center px-6 py-4 border-b">
             <Link
@@ -47,18 +49,22 @@ export default function TopBar() {
                         { href: "/", label: "Calendar" },
                         { href: "/my-shifts", label: "My Shifts" },
                         ...(user?.role !== "staff" ? [{ href: "/payouts", label: "Payouts" }] : []),
+                        { href: "/profile", label: "Profile" },
                         ...(user?.role === "admin" ? [{ href: "/admin", label: "Admin" }] : []),
                     ].map(({ href, label }) => (
                         <Link
                             key={href}
                             href={href}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            className={`relative px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                                 pathname === href
                                     ? "bg-slate-800 text-white"
                                     : "text-slate-400 hover:text-white hover:bg-slate-800"
                             }`}
                         >
                             {label}
+                            {label === "Profile" && isProfileIncomplete && (
+                                <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-amber-500 rounded-full" />
+                            )}
                         </Link>
                     ))}
                 </nav>
@@ -68,15 +74,28 @@ export default function TopBar() {
                 <div className="relative" ref={menuRef}>
                     <div
                         onClick={() => setMenuOpen((v) => !v)}
-                        className="w-9 h-9 rounded-full bg-black text-white flex items-center justify-center font-bold text-sm cursor-pointer select-none"
+                        className="relative w-9 h-9 rounded-full bg-black text-white flex items-center justify-center font-bold text-sm cursor-pointer select-none"
                     >
                         {user.first_name?.[0]?.toUpperCase() ?? "?"}
+                        {isProfileIncomplete && (
+                            <span className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-amber-500 rounded-full border-2 border-slate-950" />
+                        )}
                     </div>
                     {menuOpen && (
-                        <div className="absolute right-0 mt-1 w-40 bg-white border rounded-lg shadow-lg z-50">
+                        <div className="absolute right-0 mt-1 w-44 bg-white border rounded-lg shadow-lg z-50">
                             <div className="px-3 py-2 text-xs text-slate-500 border-b truncate">
                                 {user.first_name} {user.last_name}
                             </div>
+                            <Link
+                                href="/profile"
+                                onClick={() => setMenuOpen(false)}
+                                className="w-full text-left flex items-center justify-between px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 cursor-pointer"
+                            >
+                                Profile
+                                {isProfileIncomplete && (
+                                    <span className="w-2 h-2 bg-amber-500 rounded-full flex-shrink-0" />
+                                )}
+                            </Link>
                             <button
                                 onClick={handleLogout}
                                 className="w-full text-left px-3 py-2 text-sm text-red-500 hover:bg-slate-50 rounded-b-lg cursor-pointer"
