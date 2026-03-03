@@ -1,17 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 
 export default function TopBar() {
     const router = useRouter();
     const pathname = usePathname();
-    const [user, setUser] = useState<{ first_name: string; last_name: string } | null>(null);
+    const [user, setUser] = useState<{ first_name: string; last_name: string; role?: string } | null>(null);
+    const [menuOpen, setMenuOpen] = useState(false);
+    const menuRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         const stored = localStorage.getItem("shift_user");
         if (stored) setUser(JSON.parse(stored));
+    }, []);
+
+    useEffect(() => {
+        function handleClickOutside(e: MouseEvent) {
+            if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+                setMenuOpen(false);
+            }
+        }
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
     const handleLogout = () => {
@@ -31,7 +43,12 @@ export default function TopBar() {
 
             {user && (
                 <nav className="flex gap-1">
-                    {[{ href: "/", label: "Calendar" }, { href: "/my-shifts", label: "My Shifts" }].map(({ href, label }) => (
+                    {[
+                        { href: "/", label: "Calendar" },
+                        { href: "/my-shifts", label: "My Shifts" },
+                        ...(user?.role !== "staff" ? [{ href: "/payouts", label: "Payouts" }] : []),
+                        ...(user?.role === "admin" ? [{ href: "/admin", label: "Admin" }] : []),
+                    ].map(({ href, label }) => (
                         <Link
                             key={href}
                             href={href}
@@ -48,21 +65,26 @@ export default function TopBar() {
             )}
 
             {user ? (
-                <div className="relative group">
-                    <div className="w-9 h-9 rounded-full bg-black text-white flex items-center justify-center font-bold text-sm cursor-pointer select-none">
+                <div className="relative" ref={menuRef}>
+                    <div
+                        onClick={() => setMenuOpen((v) => !v)}
+                        className="w-9 h-9 rounded-full bg-black text-white flex items-center justify-center font-bold text-sm cursor-pointer select-none"
+                    >
                         {user.first_name?.[0]?.toUpperCase() ?? "?"}
                     </div>
-                    <div className="absolute right-0 mt-1 w-36 bg-white border rounded-lg shadow-lg opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity z-10">
-                        <div className="px-3 py-2 text-xs text-slate-500 border-b truncate">
-                            {user.first_name} {user.last_name}
+                    {menuOpen && (
+                        <div className="absolute right-0 mt-1 w-40 bg-white border rounded-lg shadow-lg z-50">
+                            <div className="px-3 py-2 text-xs text-slate-500 border-b truncate">
+                                {user.first_name} {user.last_name}
+                            </div>
+                            <button
+                                onClick={handleLogout}
+                                className="w-full text-left px-3 py-2 text-sm text-red-500 hover:bg-slate-50 rounded-b-lg cursor-pointer"
+                            >
+                                Logout
+                            </button>
                         </div>
-                        <button
-                            onClick={handleLogout}
-                            className="w-full text-left px-3 py-2 text-sm text-red-500 hover:bg-slate-50 rounded-b-lg"
-                        >
-                            Logout
-                        </button>
-                    </div>
+                    )}
                 </div>
             ) : (
                 <div className="relative group/login">

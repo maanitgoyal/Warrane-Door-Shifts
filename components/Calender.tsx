@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
+import SwapModal from "@/components/SwapModal";
 
 const HOUR_HEIGHT = 30;
 
@@ -11,6 +12,8 @@ export default function Calendar() {
     const [openShifts, setOpenShifts] = useState<any[]>([]);
     const [user, setUser] = useState<any>(null);
     const [claimModal, setClaimModal] = useState<{ shift: any; slotShifts: any[] } | null>(null);
+    const [userShifts, setUserShifts] = useState<any[]>([]);
+    const [swapModal, setSwapModal] = useState<{ shift: any; slotShifts: any[] } | null>(null);
 
     useEffect(() => {
         const stored = localStorage.getItem("shift_user");
@@ -63,38 +66,63 @@ export default function Calendar() {
     }
 
     async function fetchShifts() {
-        const dateString = selectedDate.toISOString().split("T")[0];
+        const dateStr = selectedDate.toISOString().split("T")[0];
 
-        const { data, error } = await supabase
-            .from("shifts")
-            .select("*")
-            .gte("start_at", `${dateString}T00:00:00`)
-            .lt("start_at", `${dateString}T23:59:59`)
-            .order("start_at");
+        // Also fetch overnight shifts that started the previous day
+        const prev = new Date(selectedDate);
+        prev.setDate(prev.getDate() - 1);
+        const prevStr = prev.toISOString().split("T")[0];
 
-        if (!error && data) {
-            const shiftIds = data.map((s) => s.id);
-            let claimMap: Record<string, any> = {};
-            if (shiftIds.length > 0) {
-                const { data: claimsData } = await supabase
-                    .from("claims")
-                    .select("shift_id, claimant_name")
-                    .in("shift_id", shiftIds)
-                    .eq("status", "pending");
-                if (claimsData) claimMap = Object.fromEntries(claimsData.map((c) => [c.shift_id, c]));
-            }
-            const formatted = data.map((shift) => {
-                const shiftStart = new Date(shift.start_at);
-                const shiftEnd = new Date(shift.end_at);
-                return {
-                    ...shift,
-                    start: shiftStart.getUTCHours() + shiftStart.getUTCMinutes() / 60,
-                    end: shiftEnd.getUTCHours() + shiftEnd.getUTCMinutes() / 60,
-                    pendingClaim: claimMap[shift.id] ?? null,
-                };
-            });
-            setShifts(formatted);
-        }
+        const [{ data: todayData }, { data: overnightData }] = await Promise.all([
+            supabase.from("shifts").select("*")
+                .gte("start_at", `${dateStr}T00:00:00`)
+                .lt("start_at", `${dateStr}T23:59:59`)
+                .order("start_at"),
+            supabase.from("shifts").select("*")
+                .gte("start_at", `${prevStr}T00:00:00`)
+                .lt("start_at", `${prevStr}T23:59:59`)
+                .gt("end_at", `${dateStr}T00:00:00`)
+                .order("start_at"),
+        ]);
+
+        const allData = [...(todayData ?? []), ...(overnightData ?? [])];
+        if (allData.length === 0) { setShifts([]); return; }
+
+        const ids = allData.map((s) => s.id);
+        const [{ data: pendingClaims }, { data: approvedClaims }, { data: pendingSwaps }] = await Promise.all([
+            supabase.from("claims").select("shift_id, claimant_name, username").in("shift_id", ids).eq("status", "pending"),
+            supabase.from("claims").select("shift_id, claimant_name, username").in("shift_id", ids).eq("status", "approved"),
+            supabase.from("swaps").select("shift_id, requester_username, requester_name, target_username, target_name").in("shift_id", ids).eq("status", "pending"),
+        ]);
+
+        const pendingMap: Record<string, any> = Object.fromEntries((pendingClaims ?? []).map((c) => [c.shift_id, c]));
+        const approvedMap: Record<string, any> = Object.fromEntries((approvedClaims ?? []).map((c) => [c.shift_id, c]));
+        const swapMap: Record<string, any> = Object.fromEntries((pendingSwaps ?? []).map((s) => [s.shift_id, s]));
+
+        const formatted = allData.map((shift) => {
+            const isFromPrevDay = shift.start_at.slice(0, 10) !== dateStr;
+            const crossesMidnight = shift.end_at.slice(0, 10) !== shift.start_at.slice(0, 10);
+            const shiftStart = new Date(shift.start_at);
+            const shiftEnd = new Date(shift.end_at);
+
+            const displayStart = isFromPrevDay ? 0 : shiftStart.getUTCHours() + shiftStart.getUTCMinutes() / 60;
+            const displayEnd = isFromPrevDay
+                ? shiftEnd.getUTCHours() + shiftEnd.getUTCMinutes() / 60
+                : crossesMidnight ? 24 : shiftEnd.getUTCHours() + shiftEnd.getUTCMinutes() / 60;
+
+            return {
+                ...shift,
+                start: displayStart,
+                end: displayEnd,
+                isFromPrevDay,
+                crossesMidnight,
+                pendingClaim: pendingMap[shift.id] ?? null,
+                approvedClaim: approvedMap[shift.id] ?? null,
+                pendingSwap: swapMap[shift.id] ?? null,
+            };
+        });
+
+        setShifts(formatted);
     }
 
     function getSlotShifts(shift: any): any[] {
@@ -117,6 +145,45 @@ export default function Calendar() {
         setClaimModal({ shift, slotShifts: all.length > 0 ? all : [shift] });
     }
 
+    async function fetchUserShifts() {
+        if (!user?.username) return;
+        const { data: claimsData } = await supabase
+            .from("claims")
+            .select("shift_id")
+            .eq("username", user.username)
+            .eq("status", "approved");
+        if (!claimsData || claimsData.length === 0) { setUserShifts([]); return; }
+        const shiftIds = claimsData.map((c) => c.shift_id);
+        const { data: shiftsData } = await supabase
+            .from("shifts")
+            .select("*")
+            .in("id", shiftIds)
+            .order("start_at");
+        if (shiftsData) setUserShifts(shiftsData);
+    }
+
+    function getSlotUserShifts(shift: any): any[] {
+        const s = new Date(shift.start_at);
+        const e = new Date(shift.end_at);
+        const key = `${s.getUTCDay()}-${s.getUTCHours()}:${s.getUTCMinutes()}-${e.getUTCHours()}:${e.getUTCMinutes()}`;
+        return userShifts.filter((us) => {
+            const ss = new Date(us.start_at);
+            const se = new Date(us.end_at);
+            const k = `${ss.getUTCDay()}-${ss.getUTCHours()}:${ss.getUTCMinutes()}-${se.getUTCHours()}:${se.getUTCMinutes()}`;
+            return k === key;
+        });
+    }
+
+    function openSwapModal(shift: any) {
+        if (!user) return;
+        const slotShifts = getSlotUserShifts(shift);
+        setSwapModal({ shift, slotShifts: slotShifts.length > 0 ? slotShifts : [shift] });
+    }
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => { if (user) fetchUserShifts(); }, [user]);
+
+    const userShiftIds = new Set(userShifts.map((s) => s.id));
     const weekDates = getWeekDates(selectedDate);
 
     return (
@@ -252,28 +319,68 @@ export default function Calendar() {
                             </button>
                         </div>
 
+                        {/* CURRENTLY ON DOOR */}
+                        {selectedDate.toDateString() === new Date().toDateString() && (() => {
+                            const nowMs = Date.now();
+                            const active = shifts.find(
+                                (s) => nowMs >= new Date(s.start_at).getTime() && nowMs < new Date(s.end_at).getTime()
+                            );
+                            if (!active) return null;
+                            const name = active.approvedClaim?.claimant_name ?? (active.status === "taken" ? "Unknown" : null);
+                            if (!name) return null;
+                            return (
+                                <div className="mb-3 flex items-center gap-2.5 bg-green-600/10 border border-green-600/30 rounded-xl px-4 py-2.5">
+                                    <div className="w-2 h-2 rounded-full bg-green-400 flex-shrink-0 animate-pulse" />
+                                    <span className="text-green-400 text-sm font-medium">Currently on door: {name}</span>
+                                </div>
+                            );
+                        })()}
+
                         {/* TIMELINE */}
                         <div className="relative rounded-2xl p-6 bg-slate-900 border border-slate-800 overflow-hidden">
-                            {shifts.map((shift, index) => {
+                            {shifts.map((shift) => {
                                 const height = (shift.end - shift.start) * HOUR_HEIGHT;
-                                const isSmall = height < 40;
-                                const isPending = !!shift.pendingClaim;
-                                const bgColor = isPending
-                                    ? "bg-amber-500 cursor-default"
-                                    : shift.status === "open"
-                                    ? "bg-green-600 cursor-pointer"
-                                    : shift.status === "taken"
-                                    ? "bg-red-600 cursor-default"
-                                    : "bg-slate-600 cursor-default";
+                                const isSmall = height < 36;
+                                const isUserShift = userShiftIds.has(shift.id);
+                                const hasApprovedClaim = !!shift.approvedClaim;
+                                const claimantName = shift.approvedClaim?.claimant_name;
+                                const isMyPendingClaim = !isUserShift && !hasApprovedClaim && shift.pendingClaim?.username === user?.username;
+                                const isPendingClaim = !isUserShift && !hasApprovedClaim && !!shift.pendingClaim && !isMyPendingClaim;
+                                const hasPendingSwap = !!shift.pendingSwap;
+
+                                // Use approvedClaim as the source of truth — don't rely solely on shift.status
+                                let bgColor: string;
+                                if (isUserShift) bgColor = "bg-violet-600 cursor-pointer";
+                                else if (hasApprovedClaim && hasPendingSwap) bgColor = "bg-sky-700 cursor-default";
+                                else if (hasApprovedClaim) bgColor = "bg-sky-600 cursor-default";
+                                else if (isMyPendingClaim) bgColor = "bg-violet-900 cursor-default";
+                                else if (isPendingClaim) bgColor = "bg-amber-500 cursor-default";
+                                else if (shift.status === "open") bgColor = "bg-green-600 cursor-pointer";
+                                else bgColor = "bg-slate-600 cursor-default";
+
+                                let sublabel: string;
+                                if (isUserShift && hasPendingSwap) sublabel = `Swap → ${shift.pendingSwap.target_name}`;
+                                else if (isUserShift) sublabel = "MY SHIFT — tap to swap";
+                                else if (hasApprovedClaim && hasPendingSwap) sublabel = `${claimantName} → ${shift.pendingSwap.target_name}`;
+                                else if (hasApprovedClaim) sublabel = claimantName!;
+                                else if (isMyPendingClaim) sublabel = "AWAITING APPROVAL";
+                                else if (isPendingClaim) sublabel = `Pending: ${shift.pendingClaim.claimant_name}`;
+                                else sublabel = shift.status.toUpperCase();
+
+                                // Always show the full shift times (not clipped display times)
+                                const timeLabel = `${formatUTCTime(new Date(shift.start_at))} – ${formatUTCTime(new Date(shift.end_at))}`;
 
                                 return (
                                     <div
-                                        key={index}
-                                        onClick={() => !isPending && openClaimModal(shift)}
+                                        key={shift.id}
+                                        onClick={() => {
+                                            if (isUserShift) openSwapModal(shift);
+                                            else if (!hasApprovedClaim && !isPendingClaim && !isMyPendingClaim) openClaimModal(shift);
+                                        }}
                                         className={`absolute left-16 right-4 rounded-xl shadow-lg text-white ${bgColor}`}
                                         style={{
                                             top: `${shift.start * HOUR_HEIGHT}px`,
-                                            height: `${height}px`,
+                                            height: `${Math.max(height, 22)}px`,
                                             padding: "6px 10px",
                                             display: "flex",
                                             flexDirection: "column",
@@ -281,19 +388,13 @@ export default function Calendar() {
                                         }}
                                     >
                                         {isSmall ? (
-                                            <div className="font-semibold text-sm leading-tight">
-                                                {shift.start_at.slice(11, 16)} - {shift.end_at.slice(11, 16)}
-                                            </div>
+                                            <div className="font-semibold text-xs leading-tight truncate">{timeLabel}</div>
                                         ) : (
                                             <>
-                                                <div className="font-semibold text-sm leading-tight">
-                                                    {shift.start_at.slice(11, 16)} - {shift.end_at.slice(11, 16)}
-                                                </div>
-                                                <div className="opacity-90 text-xs leading-tight">
-                                                    {isPending
-                                                        ? `Pending: ${shift.pendingClaim.claimant_name}`
-                                                        : shift.status.toUpperCase()}
-                                                </div>
+                                                <div className="font-semibold text-sm leading-tight">{timeLabel}</div>
+                                                <div className="opacity-90 text-xs leading-tight">{sublabel}</div>
+                                                {shift.isFromPrevDay && <div className="opacity-60 text-xs leading-none mt-0.5">← overnight</div>}
+                                                {shift.crossesMidnight && <div className="opacity-60 text-xs leading-none mt-0.5">→ continues next day</div>}
                                             </>
                                         )}
                                     </div>
@@ -339,6 +440,16 @@ export default function Calendar() {
                     user={user}
                     onClose={() => setClaimModal(null)}
                     onSuccess={() => { fetchOpenShifts(); fetchShifts(); }}
+                />
+            )}
+
+            {swapModal && user && (
+                <SwapModal
+                    shift={swapModal.shift}
+                    slotShifts={swapModal.slotShifts}
+                    currentUser={user}
+                    onClose={() => setSwapModal(null)}
+                    onSuccess={() => { fetchUserShifts(); fetchShifts(); }}
                 />
             )}
         </>
