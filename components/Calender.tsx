@@ -26,11 +26,13 @@ export default function Calendar() {
 
     useEffect(() => {
         fetchOpenShifts();
-    }, []);
+    }, [selectedDate]);
 
     async function fetchOpenShifts() {
         const now = new Date();
-        const todayStr = localToUTCMidnight(now).toISOString().split("T")[0];
+        // Use fake-UTC now so shifts that have already started today are excluded
+        const sp = getSydneyParts();
+        const fakeNowIso = new Date(Date.UTC(sp.year, sp.month, sp.day, sp.hour, sp.minute, sp.second)).toISOString();
 
         const currentTri = TRIMESTERS.find((tri) => {
             const end = new Date(tri.start.getTime() + 77 * 86400000);
@@ -41,7 +43,7 @@ export default function Calendar() {
             .from("shifts")
             .select("*")
             .eq("status", "open")
-            .gte("start_at", `${todayStr}T00:00:00`)
+            .gte("start_at", fakeNowIso)
             .order("start_at");
 
         if (currentTri) {
@@ -279,7 +281,7 @@ export default function Calendar() {
                         <div className="flex justify-between items-center mb-6">
                             <button
                                 onClick={() => setSelectedDate(new Date(selectedDate.getTime() - 7 * 86400000))}
-                                className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
+                                className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer mr-2"
                             >
                                 ◀
                             </button>
@@ -308,7 +310,7 @@ export default function Calendar() {
 
                             <button
                                 onClick={() => setSelectedDate(new Date(selectedDate.getTime() + 7 * 86400000))}
-                                className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer"
+                                className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg cursor-pointer ml-2"
                             >
                                 ▶
                             </button>
@@ -585,27 +587,41 @@ function ClaimModal({ shift, slotShifts, user, onClose, onSuccess }: {
 /* ---------------- MINI CALENDAR ---------------- */
 
 function MiniCalendar({ selectedDate, onSelect }: any) {
-    // Use UTC methods throughout so all dates are UTC-midnight and stay consistent
-    const year = selectedDate.getUTCFullYear();
-    const month = selectedDate.getUTCMonth();
+    const [viewDate, setViewDate] = useState(() =>
+        new Date(Date.UTC(selectedDate.getUTCFullYear(), selectedDate.getUTCMonth(), 1))
+    );
 
+    // Sync the view when the selected date moves to a different month
+    useEffect(() => {
+        setViewDate(new Date(Date.UTC(selectedDate.getUTCFullYear(), selectedDate.getUTCMonth(), 1)));
+    }, [selectedDate.getUTCFullYear(), selectedDate.getUTCMonth()]);
+
+    const year = viewDate.getUTCFullYear();
+    const month = viewDate.getUTCMonth();
     const firstDay = new Date(Date.UTC(year, month, 1));
     const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
     const startOffset = firstDay.getUTCDay();
 
-    const cells = [];
+    const cells: (Date | null)[] = [];
     for (let i = 0; i < startOffset; i++) cells.push(null);
     for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(Date.UTC(year, month, d)));
 
+    function prevMonth() { setViewDate(new Date(Date.UTC(year, month - 1, 1))); }
+    function nextMonth() { setViewDate(new Date(Date.UTC(year, month + 1, 1))); }
+
     return (
         <div>
-            <div className="text-center text-white font-semibold mb-4">
-                {firstDay.toLocaleString("en-US", { month: "long", timeZone: "UTC" })} {year}
+            <div className="flex items-center justify-between mb-4">
+                <button onClick={prevMonth} className="text-slate-400 hover:text-white cursor-pointer px-1 transition-colors text-sm">◀</button>
+                <div className="text-white font-semibold text-sm">
+                    {firstDay.toLocaleString("en-US", { month: "long", timeZone: "UTC" })} {year}
+                </div>
+                <button onClick={nextMonth} className="text-slate-400 hover:text-white cursor-pointer px-1 transition-colors text-sm">▶</button>
             </div>
 
             <div className="grid grid-cols-7 gap-2 text-xs text-slate-400 mb-2">
                 {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
-                    <div key={i}>{d}</div>
+                    <div key={i} className="text-center">{d}</div>
                 ))}
             </div>
 

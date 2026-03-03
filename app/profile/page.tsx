@@ -30,6 +30,7 @@ export default function ProfilePage() {
         const updated = { ...JSON.parse(stored), ...updates };
         localStorage.setItem("shift_user", JSON.stringify(updated));
         setUser(updated);
+        window.dispatchEvent(new CustomEvent("shift_user_updated"));
     }
 
     async function savePassword() {

@@ -10,11 +10,27 @@ export default function TopBar() {
     const [user, setUser] = useState<{ first_name: string; last_name: string; role?: string; password_hash?: string | null } | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
+    const [showPasswordReminder, setShowPasswordReminder] = useState(false);
 
     useEffect(() => {
         const stored = localStorage.getItem("shift_user");
         if (stored) setUser(JSON.parse(stored));
+        if (sessionStorage.getItem("show_password_reminder")) setShowPasswordReminder(true);
     }, []);
+
+    useEffect(() => {
+        function onUserUpdated() {
+            const stored = localStorage.getItem("shift_user");
+            if (stored) setUser(JSON.parse(stored));
+        }
+        window.addEventListener("shift_user_updated", onUserUpdated);
+        return () => window.removeEventListener("shift_user_updated", onUserUpdated);
+    }, []);
+
+    function dismissReminder() {
+        sessionStorage.removeItem("show_password_reminder");
+        setShowPasswordReminder(false);
+    }
 
     useEffect(() => {
         function handleClickOutside(e: MouseEvent) {
@@ -35,6 +51,7 @@ export default function TopBar() {
     const isProfileIncomplete = user && !user.password_hash;
 
     return (
+        <>
         <div className="flex justify-between items-center px-6 py-4 border-b">
             <Link
                 href="/"
@@ -119,5 +136,16 @@ export default function TopBar() {
                 </div>
             )}
         </div>
+        {showPasswordReminder && (
+            <div className="flex items-center justify-between gap-3 bg-amber-500/10 border-b border-amber-500/25 px-6 py-2.5">
+                <div className="flex items-center gap-2.5">
+                    <span className="w-4 h-4 rounded-full bg-amber-500 flex items-center justify-center text-black text-[10px] font-black flex-shrink-0">!</span>
+                    <span className="text-amber-400 text-sm">Set a password to secure your account.</span>
+                    <Link href="/profile" onClick={dismissReminder} className="text-amber-400 underline text-sm font-semibold">Go to profile →</Link>
+                </div>
+                <button onClick={dismissReminder} className="text-amber-400/60 hover:text-amber-400 text-lg cursor-pointer leading-none">✕</button>
+            </div>
+        )}
+        </>
     );
 }

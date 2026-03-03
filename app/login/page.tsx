@@ -30,6 +30,7 @@ export default function Login() {
             setStep("password");
         } else {
             localStorage.setItem("shift_user", JSON.stringify(data));
+            sessionStorage.setItem("show_password_reminder", "1");
             window.location.href = "/";
         }
     }

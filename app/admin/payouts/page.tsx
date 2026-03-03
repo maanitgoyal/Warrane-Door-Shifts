@@ -175,8 +175,8 @@ export default function AdminPayoutsPage() {
                     start.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }),
                     DAY[start.getUTCDay()],
                     getTriWeekLabel(start),
-                    `${formatUTCTime(start)} – ${formatUTCTime(end)}`,
-                    night ? "Night shift" : `${hours}h × $20/hr`,
+                    `${formatUTCTime(start)} -- ${formatUTCTime(end)}`,
+                    night ? "Night shift" : `${hours}h x $20/hr`,
                     pay,
                 ]);
                 firstRow = false;
@@ -327,11 +327,11 @@ export default function AdminPayoutsPage() {
                                                     <div key={sh.id} className="px-5 py-3 flex items-center justify-between gap-4">
                                                         <div>
                                                             <div className="text-white text-sm font-medium">
-                                                                {formatUTCTime(start)} – {formatUTCTime(end)}
+                                                                {formatUTCTime(start)} -- {formatUTCTime(end)}
                                                             </div>
                                                             <div className="text-slate-400 text-xs mt-0.5">
                                                                 {getTriWeekLabel(start)} · {DAY[start.getUTCDay()]} {start.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "UTC" })}
-                                                                {night ? " · Night shift" : ` · ${hours}h × $20/hr`}
+                                                                {night ? " · Night shift" : ` · ${hours}h x $20/hr`}
                                                             </div>
                                                         </div>
                                                         <div className="text-green-400 font-semibold flex-shrink-0">${pay.toFixed(2)}</div>

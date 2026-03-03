@@ -116,11 +116,11 @@ export default function PayoutsPage() {
                                 <div key={sh.id} className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
                                     <div>
                                         <div className="text-white text-sm font-medium">
-                                            {formatUTCTime(start)} – {formatUTCTime(end)}
+                                            {formatUTCTime(start)} -- {formatUTCTime(end)}
                                         </div>
                                         <div className="text-slate-400 text-xs mt-0.5">
                                             {getTriWeekLabel(start)} · {start.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "UTC" })}
-                                            {night ? " · Night shift — $30 flat" : ` · ${hours}h × $20/hr`}
+                                            {night ? " · Night shift - $30 flat" : ` · ${hours}h x $20/hr`}
                                         </div>
                                     </div>
                                     <div className="text-green-400 font-semibold text-base flex-shrink-0">${pay.toFixed(2)}</div>
