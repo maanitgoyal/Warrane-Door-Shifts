@@ -61,22 +61,25 @@ export default function Login() {
     }
 
     return (
-        <div className="flex flex-1 items-center justify-center bg-slate-950">
-            <div className="bg-white p-8 rounded-2xl shadow-lg w-96">
-                <h1 className="text-2xl text-red-500 font-bold mb-2 text-center">
-                    Warrane Door Shifts
-                </h1>
-                <p className="text-sm text-slate-500 text-center mb-6">
-                    {step === "username" ? "Enter your username to continue" : `Welcome back, ${userData?.first_name}`}
-                </p>
+        <div className="flex flex-1 items-center justify-center">
+            <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl w-96">
+                <div className="text-center mb-6">
+                    <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white text-xl font-bold mx-auto mb-4 shadow-lg shadow-indigo-500/20">
+                        W
+                    </div>
+                    <h1 className="text-xl font-bold text-white">Warrane Door Shifts</h1>
+                    <p className="text-sm text-slate-400 mt-1">
+                        {step === "username" ? "Sign in to your account" : `Welcome back, ${userData?.first_name}`}
+                    </p>
+                </div>
 
                 {step === "username" ? (
                     <>
-                        <label className="block text-base font-medium text-black mb-1">Username</label>
+                        <label className="block text-sm font-medium text-slate-300 mb-1.5">Username</label>
                         <input
                             type="text"
                             placeholder="e.g. justinbieber"
-                            className="w-full p-2 mb-1 border rounded focus:outline-none focus:ring-2 focus:ring-black text-black placeholder:text-slate-400"
+                            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/60 text-sm transition-colors mb-1"
                             value={username}
                             onChange={(e) => { setUsername(e.target.value); setMessage(""); }}
                             onKeyDown={handleKeyDown}
@@ -84,37 +87,36 @@ export default function Login() {
                             autoComplete="off"
                             autoCapitalize="none"
                         />
-                        <p className="text-xs text-slate-400 mb-4">
+                        <p className="text-xs text-slate-500 mb-5">
                             First name + last name, no spaces (e.g. justinbieber)
                         </p>
                         <button
                             onClick={handleUsernameSubmit}
                             disabled={loading}
-                            className="w-full bg-black text-white p-2 rounded hover:bg-slate-800 disabled:opacity-50 transition-colors cursor-pointer"
+                            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl font-semibold disabled:opacity-50 transition-colors cursor-pointer text-sm"
                         >
                             {loading ? "Checking..." : "Continue"}
                         </button>
                     </>
                 ) : (
                     <>
-                        {/* User pill */}
-                        <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 mb-4">
+                        <div className="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 mb-4">
                             <div>
-                                <p className="text-black text-sm font-semibold">{userData?.first_name} {userData?.last_name}</p>
-                                <p className="text-slate-400 text-xs">{username}</p>
+                                <p className="text-white text-sm font-semibold">{userData?.first_name} {userData?.last_name}</p>
+                                <p className="text-slate-400 text-xs">@{username}</p>
                             </div>
                             <button
                                 onClick={backToUsername}
-                                className="text-xs text-slate-400 hover:text-black cursor-pointer transition-colors"
+                                className="text-xs text-slate-400 hover:text-white cursor-pointer transition-colors"
                             >
                                 Change
                             </button>
                         </div>
-                        <label className="block text-base font-medium text-black mb-1">Password</label>
+                        <label className="block text-sm font-medium text-slate-300 mb-1.5">Password</label>
                         <input
                             type="password"
                             placeholder="Enter your password"
-                            className="w-full p-2 mb-4 border rounded focus:outline-none focus:ring-2 focus:ring-black text-black"
+                            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/60 text-sm transition-colors mb-5"
                             value={password}
                             onChange={(e) => { setPassword(e.target.value); setMessage(""); }}
                             onKeyDown={handleKeyDown}
@@ -123,15 +125,15 @@ export default function Login() {
                         <button
                             onClick={handlePasswordSubmit}
                             disabled={loading}
-                            className="w-full bg-black text-white p-2 rounded hover:bg-slate-800 disabled:opacity-50 transition-colors cursor-pointer"
+                            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl font-semibold disabled:opacity-50 transition-colors cursor-pointer text-sm"
                         >
-                            {loading ? "Verifying..." : "Login"}
+                            {loading ? "Verifying..." : "Sign in"}
                         </button>
                     </>
                 )}
 
                 {message && (
-                    <p className="mt-4 text-center text-sm text-red-500">{message}</p>
+                    <p className="mt-4 text-center text-sm text-red-400">{message}</p>
                 )}
             </div>
         </div>

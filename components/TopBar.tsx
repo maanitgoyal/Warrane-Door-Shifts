@@ -52,7 +52,7 @@ export default function TopBar() {
 
     return (
         <>
-        <div className="flex justify-between items-center px-6 py-4 border-b">
+        <div className="flex justify-between items-center px-6 py-4 border-b border-slate-800">
             <Link
                 href="/"
                 className="text-xl font-bold hover:opacity-80 transition-opacity"
@@ -92,7 +92,7 @@ export default function TopBar() {
                 <div className="relative" ref={menuRef}>
                     <div
                         onClick={() => setMenuOpen((v) => !v)}
-                        className="relative w-9 h-9 rounded-full bg-black text-white flex items-center justify-center font-bold text-sm cursor-pointer select-none"
+                        className="relative w-9 h-9 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm cursor-pointer select-none hover:bg-indigo-500 transition-colors"
                     >
                         {user.first_name?.[0]?.toUpperCase() ?? "?"}
                         {isProfileIncomplete && (
@@ -100,14 +100,15 @@ export default function TopBar() {
                         )}
                     </div>
                     {menuOpen && (
-                        <div className="absolute right-0 mt-1 w-44 bg-white border rounded-lg shadow-lg z-50">
-                            <div className="px-3 py-2 text-xs text-slate-500 border-b truncate">
-                                {user.first_name} {user.last_name}
+                        <div className="absolute right-0 mt-2 w-48 bg-slate-900 border border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden">
+                            <div className="px-4 py-3 border-b border-slate-800">
+                                <p className="text-white text-sm font-semibold truncate">{user.first_name} {user.last_name}</p>
+                                <p className="text-slate-500 text-xs truncate">@{(user as any).username}</p>
                             </div>
                             <Link
                                 href="/profile"
                                 onClick={() => setMenuOpen(false)}
-                                className="w-full text-left flex items-center justify-between px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 cursor-pointer"
+                                className="w-full text-left flex items-center justify-between px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 cursor-pointer transition-colors"
                             >
                                 Profile
                                 {isProfileIncomplete && (
@@ -116,7 +117,7 @@ export default function TopBar() {
                             </Link>
                             <button
                                 onClick={handleLogout}
-                                className="w-full text-left px-3 py-2 text-sm text-red-500 hover:bg-slate-50 rounded-b-lg cursor-pointer"
+                                className="w-full text-left px-4 py-2.5 text-sm text-red-400 hover:bg-slate-800 cursor-pointer transition-colors"
                             >
                                 Logout
                             </button>
