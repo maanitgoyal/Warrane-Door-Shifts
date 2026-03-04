@@ -299,6 +299,7 @@ export default function AdminPage() {
         await Promise.all([
             supabase.from("claims").update({ status: "approved" }).eq("id", claim.id),
             supabase.from("shifts").update({ status: "taken" }).eq("id", claim.shift_id),
+            supabase.from("claims").update({ status: "rejected" }).eq("shift_id", claim.shift_id).eq("status", "pending").neq("id", claim.id),
         ]);
         setProcessing(null);
         fetchData();
@@ -402,6 +403,7 @@ export default function AdminPage() {
                     ...claims.map((c) => Promise.all([
                         supabase.from("claims").update({ status: "approved" }).eq("id", c.id),
                         supabase.from("shifts").update({ status: "taken" }).eq("id", c.shift_id),
+                        supabase.from("claims").update({ status: "rejected" }).eq("shift_id", c.shift_id).eq("status", "pending").neq("id", c.id),
                     ])),
                     ...wholeSwaps.map(async (s) => {
                         const { data: tu } = await supabase.from("users").select("id").eq("username", s.target_username).maybeSingle();
