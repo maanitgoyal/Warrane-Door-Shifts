@@ -54,16 +54,15 @@ export default function Calendar() {
         const { data, error } = await query;
         if (!error && data) {
             const shiftIds = data.map((s) => s.id);
-            let pendingIds = new Set<string>();
+            let excludeIds = new Set<string>();
             if (shiftIds.length > 0) {
-                const { data: claimsData } = await supabase
-                    .from("claims")
-                    .select("shift_id")
-                    .in("shift_id", shiftIds)
-                    .eq("status", "pending");
-                if (claimsData) pendingIds = new Set(claimsData.map((c) => c.shift_id));
+                const [{ data: pendingData }, { data: approvedData }] = await Promise.all([
+                    supabase.from("claims").select("shift_id").in("shift_id", shiftIds).eq("status", "pending"),
+                    supabase.from("claims").select("shift_id").in("shift_id", shiftIds).eq("status", "approved"),
+                ]);
+                for (const c of [...(pendingData ?? []), ...(approvedData ?? [])]) excludeIds.add(c.shift_id);
             }
-            setOpenShifts(data.filter((s) => !pendingIds.has(s.id)));
+            setOpenShifts(data.filter((s) => !excludeIds.has(s.id)));
         }
     }
 
