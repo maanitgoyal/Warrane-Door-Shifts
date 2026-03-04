@@ -26,6 +26,22 @@ function formatUTCTime(date: Date) {
     return `${hour}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
+function getSydneyParts(d: Date = new Date()) {
+    const parts = new Intl.DateTimeFormat("en-AU", {
+        timeZone: "Australia/Sydney",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+    }).formatToParts(d);
+    const get = (type: string) => parseInt(parts.find(p => p.type === type)!.value);
+    return { year: get("year"), month: get("month") - 1, day: get("day"), hour: get("hour") % 24, minute: get("minute"), second: get("second") };
+}
+
+function fakeUtcNow(): Date {
+    const sp = getSydneyParts();
+    return new Date(Date.UTC(sp.year, sp.month, sp.day, sp.hour, sp.minute, sp.second));
+}
+
 function isNightShift(startAt: string, endAt: string): boolean {
     const s = new Date(startAt);
     const e = new Date(endAt);
@@ -55,7 +71,7 @@ export default function PayoutsPage() {
 
     async function fetchPayouts(username: string) {
         setLoading(true);
-        const now = new Date().toISOString();
+        const now = fakeUtcNow().toISOString();
 
         const { data: claimsRaw } = await supabase
             .from("claims")

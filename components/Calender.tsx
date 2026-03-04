@@ -324,7 +324,8 @@ export default function Calendar() {
                                 (s) => nowMs >= new Date(s.start_at).getTime() && nowMs < new Date(s.end_at).getTime()
                             );
                             if (!active) return null;
-                            const name = active.approvedClaim?.claimant_name ?? (active.status === "taken" ? "Unknown" : null);
+                            const claim = active.approvedClaim;
+                            const name = claim?.claimant_name || claim?.username || (active.status === "taken" ? "Someone" : null);
                             if (!name) return null;
                             return (
                                 <div className="mb-3 flex items-center gap-2.5 bg-green-600/10 border border-green-600/30 rounded-xl px-4 py-2.5">
