@@ -45,7 +45,7 @@ export default function TopBar() {
     const handleLogout = () => {
         localStorage.removeItem("shift_user");
         setUser(null);
-        router.push("/login");
+        router.push("/");
     };
 
     const isProfileIncomplete = user && !user.password_hash;
