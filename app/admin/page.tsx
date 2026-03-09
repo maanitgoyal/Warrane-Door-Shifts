@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
@@ -11,6 +11,14 @@ const TRIMESTERS = [
     { label: "T1", start: new Date(Date.UTC(2026, 1, 8)) },
     { label: "T2", start: new Date(Date.UTC(2026, 4, 25)) },
 ];
+
+async function logHistory(shiftId: string, action: string, data: {
+    user_username?: string; user_name?: string;
+    from_username?: string; from_name?: string;
+    notes?: string;
+} = {}) {
+    await supabase.from("shift_history").insert({ shift_id: shiftId, action, ...data });
+}
 
 function getTriWeekLabel(date: Date): string {
     for (const tri of TRIMESTERS) {
@@ -136,6 +144,29 @@ async function approvePartialSwap(swap: PendingSwap): Promise<void> {
             claimant_name: swap.target_name,
             status: "approved",
             ...(targetUser ? { user_id: targetUser.id } : {}),
+        });
+        await logHistory(swappedShiftId, "swap_approved", {
+            user_username: swap.target_username,
+            user_name: swap.target_name,
+            from_username: swap.requester_username,
+            from_name: swap.requester_name,
+            notes: "Partial swap",
+        });
+        await logHistory(swap.shift_id, "swap_partial_kept", {
+            user_username: swap.requester_username,
+            user_name: swap.requester_name,
+            notes: "Remaining portion after partial swap",
+        });
+        // Record swap history on the new shift so its timeline shows origin
+        await supabase.from("swaps").insert({
+            shift_id: swappedShiftId,
+            requester_username: swap.requester_username,
+            requester_name: swap.requester_name,
+            target_username: swap.target_username,
+            target_name: swap.target_name,
+            status: "approved",
+            custom_start_at: swap.custom_start_at ?? null,
+            custom_end_at: swap.custom_end_at ?? null,
         });
 
         if (hasBefore && hasAfter) {
@@ -281,8 +312,10 @@ export default function AdminPage() {
     }
 
     async function makeShiftOpen(shiftId: string) {
+        const { data: clm } = await supabase.from("claims").select("username, claimant_name").eq("shift_id", shiftId).eq("status", "approved").maybeSingle();
         await supabase.from("claims").delete().eq("shift_id", shiftId).eq("status", "approved");
         await supabase.from("shifts").update({ status: "open" }).eq("id", shiftId);
+        if (clm) await logHistory(shiftId, "admin_unassigned", { user_username: clm.username, user_name: clm.claimant_name });
         fetchDateShifts();
     }
 
@@ -301,6 +334,7 @@ export default function AdminPage() {
             supabase.from("shifts").update({ status: "taken" }).eq("id", claim.shift_id),
             supabase.from("claims").update({ status: "rejected" }).eq("shift_id", claim.shift_id).eq("status", "pending").neq("id", claim.id),
         ]);
+        await logHistory(claim.shift_id, "claim_approved", { user_username: claim.username, user_name: claim.claimant_name });
         setProcessing(null);
         fetchData();
     }
@@ -308,6 +342,7 @@ export default function AdminPage() {
     async function rejectClaim(claim: PendingClaim) {
         setProcessing(claim.id);
         await supabase.from("claims").update({ status: "rejected" }).eq("id", claim.id);
+        await logHistory(claim.shift_id, "claim_rejected", { user_username: claim.username, user_name: claim.claimant_name });
         setProcessing(null);
         fetchData();
     }
@@ -332,6 +367,12 @@ export default function AdminPage() {
                         .eq("username", swap.requester_username)
                         .eq("status", "approved"),
                 ]);
+                await logHistory(swap.shift_id, "swap_approved", {
+                    user_username: swap.target_username,
+                    user_name: swap.target_name,
+                    from_username: swap.requester_username,
+                    from_name: swap.requester_name,
+                });
             }
         } finally {
             setProcessing(null);
@@ -342,6 +383,7 @@ export default function AdminPage() {
     async function rejectSwap(swap: PendingSwap) {
         setProcessing(swap.id);
         await supabase.from("swaps").update({ status: "rejected" }).eq("id", swap.id);
+        await logHistory(swap.shift_id, "swap_rejected", { user_username: swap.requester_username, user_name: swap.requester_name });
         setProcessing(null);
         fetchData();
     }
@@ -404,10 +446,11 @@ export default function AdminPage() {
                         supabase.from("claims").update({ status: "approved" }).eq("id", c.id),
                         supabase.from("shifts").update({ status: "taken" }).eq("id", c.shift_id),
                         supabase.from("claims").update({ status: "rejected" }).eq("shift_id", c.shift_id).eq("status", "pending").neq("id", c.id),
+                        logHistory(c.shift_id, "claim_approved", { user_username: c.username, user_name: c.claimant_name }),
                     ])),
                     ...wholeSwaps.map(async (s) => {
                         const { data: tu } = await supabase.from("users").select("id").eq("username", s.target_username).maybeSingle();
-                        return Promise.all([
+                        await Promise.all([
                             supabase.from("swaps").update({ status: "approved" }).eq("id", s.id),
                             supabase.from("claims").update({
                                 username: s.target_username,
@@ -415,6 +458,12 @@ export default function AdminPage() {
                                 ...(tu ? { user_id: tu.id } : {}),
                             }).eq("shift_id", s.shift_id).eq("username", s.requester_username).eq("status", "approved"),
                         ]);
+                        await logHistory(s.shift_id, "swap_approved", {
+                            user_username: s.target_username,
+                            user_name: s.target_name,
+                            from_username: s.requester_username,
+                            from_name: s.requester_name,
+                        });
                     }),
                 ]);
                 for (const s of partialSwaps) {
@@ -422,8 +471,14 @@ export default function AdminPage() {
                 }
             } else {
                 await Promise.all([
-                    ...claims.map((c) => supabase.from("claims").update({ status: "rejected" }).eq("id", c.id)),
-                    ...swaps.map((s) => supabase.from("swaps").update({ status: "rejected" }).eq("id", s.id)),
+                    ...claims.map((c) => Promise.all([
+                        supabase.from("claims").update({ status: "rejected" }).eq("id", c.id),
+                        logHistory(c.shift_id, "claim_rejected", { user_username: c.username, user_name: c.claimant_name }),
+                    ])),
+                    ...swaps.map((s) => Promise.all([
+                        supabase.from("swaps").update({ status: "rejected" }).eq("id", s.id),
+                        logHistory(s.shift_id, "swap_rejected", { user_username: s.requester_username, user_name: s.requester_name }),
+                    ])),
                 ]);
             }
         } finally {
@@ -515,12 +570,12 @@ export default function AdminPage() {
                                                 </div>
                                                 <div className="text-left">
                                                     <div className="text-white font-semibold text-sm">{group.name}</div>
-                                                    <div className="text-slate-500 text-xs">{group.username}</div>
+                                                    <div className="text-slate-400 text-xs">{group.username}</div>
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-3">
-                                                <span className="text-xs text-slate-400">{count} request{count !== 1 ? "s" : ""}</span>
-                                                <span className="text-slate-500 text-xs">{isExpanded ? "▲" : "▼"}</span>
+                                                <span className="text-xs text-slate-300">{count} request{count !== 1 ? "s" : ""}</span>
+                                                <span className="text-slate-400 text-xs">{isExpanded ? "▲" : "▼"}</span>
                                             </div>
                                         </button>
                                     </div>
@@ -543,7 +598,7 @@ export default function AdminPage() {
                                                                 <span className="text-xs bg-green-600/20 text-green-400 border border-green-600/30 px-2 py-0.5 rounded-full">Claim</span>
                                                                 {s && <span className="text-white text-sm font-medium">{getTriWeekLabel(s)} · {DAY[s.getUTCDay()]}</span>}
                                                             </div>
-                                                            {s && e && <div className="text-slate-400 text-xs">{formatUTCTime(s)} – {formatUTCTime(e)}</div>}
+                                                            {s && e && <div className="text-slate-300 text-xs">{formatUTCTime(s)} – {formatUTCTime(e)}</div>}
                                                         </div>
                                                         <div className="flex gap-2 flex-shrink-0">
                                                             <button onClick={() => approveClaim(claim)} disabled={!!busy}
@@ -575,7 +630,7 @@ export default function AdminPage() {
                                                                 <span className="text-xs bg-violet-600/20 text-violet-400 border border-violet-600/30 px-2 py-0.5 rounded-full">Swap</span>
                                                                 {s && <span className="text-white text-sm font-medium">{getTriWeekLabel(s)} · {DAY[s.getUTCDay()]}</span>}
                                                             </div>
-                                                            {s && e && <div className="text-slate-400 text-xs">{formatUTCTime(s)} – {formatUTCTime(e)}</div>}
+                                                            {s && e && <div className="text-slate-300 text-xs">{formatUTCTime(s)} – {formatUTCTime(e)}</div>}
                                                             {isPartial && (
                                                                 <div className="text-violet-400 text-xs mt-0.5">
                                                                     Partial: {formatUTCTime(new Date(swap.custom_start_at!))} – {formatUTCTime(new Date(swap.custom_end_at!))}
@@ -583,9 +638,9 @@ export default function AdminPage() {
                                                             )}
                                                             {/* Who → who */}
                                                             <div className="flex items-center gap-1.5 mt-1.5">
-                                                                <span className="text-slate-200 text-xs font-medium">{swap.requester_name}</span>
-                                                                <span className="text-slate-500 text-xs">→</span>
-                                                                <span className="text-slate-200 text-xs font-medium">{swap.target_name}</span>
+                                                                <span className="text-white text-xs font-medium">{swap.requester_name}</span>
+                                                                <span className="text-slate-400 text-xs">→</span>
+                                                                <span className="text-white text-xs font-medium">{swap.target_name}</span>
                                                             </div>
                                                         </div>
                                                         <div className="flex gap-2 flex-shrink-0">
@@ -871,6 +926,35 @@ function TimeInput({ value, onChange }: { value: string; onChange: (v: string) =
     );
 }
 
+/* ─── Time Select (dropdown for partial shift) ─── */
+
+function TimeSelect({ value, onChange, shiftStart, shiftEnd }: { value: string; onChange: (v: string) => void; shiftStart: string; shiftEnd: string }) {
+    const options = useMemo(() => {
+        const startMins = timeToMins(shiftStart);
+        const endMins = timeToMins(shiftEnd);
+        const set = new Set<string>();
+        for (let m = startMins; m <= endMins; m += 30) {
+            set.add(`${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`);
+        }
+        // Always include exact shift start/end
+        set.add(shiftStart);
+        set.add(shiftEnd);
+        return [...set].sort();
+    }, [shiftStart, shiftEnd]);
+
+    return (
+        <select
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500/60 transition-colors cursor-pointer"
+        >
+            {options.map((t) => (
+                <option key={t} value={t}>{minsToLabel(timeToMins(t))}</option>
+            ))}
+        </select>
+    );
+}
+
 /* ─── Assign Modal ─── */
 
 function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () => void; onSuccess: () => void }) {
@@ -992,6 +1076,7 @@ function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () =>
         setSubmitting(true);
         if (!isPartial) {
             await Promise.all(selectedShiftIds.map(async (shiftId) => {
+                const { data: oldClm } = await supabase.from("claims").select("username, claimant_name").eq("shift_id", shiftId).eq("status", "approved").maybeSingle();
                 await supabase.from("claims").update({ status: "rejected" }).eq("shift_id", shiftId).eq("status", "pending");
                 await supabase.from("claims").delete().eq("shift_id", shiftId).eq("status", "approved");
                 await supabase.from("claims").insert({
@@ -1002,6 +1087,11 @@ function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () =>
                     username: selectedUser.username,
                 });
                 await supabase.from("shifts").update({ status: "taken" }).eq("id", shiftId);
+                await logHistory(shiftId, "admin_assigned", {
+                    user_username: selectedUser.username,
+                    user_name: `${selectedUser.first_name} ${selectedUser.last_name}`,
+                    ...(oldClm ? { from_username: oldClm.username, from_name: oldClm.claimant_name } : {}),
+                });
                 await mergeAdjacentShifts(selectedUser.username, `${selectedUser.first_name} ${selectedUser.last_name}`, selectedUser.id, shiftId);
             }));
         } else {
@@ -1044,6 +1134,12 @@ function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () =>
             return;
         }
         await supabase.from("claims").insert({ shift_id: newShiftId, user_id: selectedUser.id, username: selectedUser.username, claimant_name: `${selectedUser.first_name} ${selectedUser.last_name}`, status: "approved" });
+        await logHistory(newShiftId, "admin_assigned", {
+            user_username: selectedUser.username,
+            user_name: `${selectedUser.first_name} ${selectedUser.last_name}`,
+            notes: `Partial: ${partialStart}–${partialEnd}`,
+            ...(existingClm ? { from_username: existingClm.username, from_name: existingClm.claimant_name } : {}),
+        });
         if (hasBefore && hasAfter) {
             await supabase.from("shifts").update({ end_at: customStart }).eq("id", shiftId);
             const { data: afterShifts } = await supabase.from("shifts")
@@ -1132,17 +1228,21 @@ function AssignModal({ shift, onClose, onSuccess }: { shift: any; onClose: () =>
                             <div className="flex items-center gap-2 mb-4">
                                 <div className="flex-1">
                                     <label className="text-xs text-slate-500 mb-1 block">Start</label>
-                                    <TimeInput
+                                    <TimeSelect
                                         value={partialStart}
                                         onChange={(v) => { setPartialStart(v); setTimeError(null); }}
+                                        shiftStart={shiftStartTime}
+                                        shiftEnd={shiftEndTime}
                                     />
                                 </div>
                                 <span className="text-slate-500 mt-5 text-lg">→</span>
                                 <div className="flex-1">
                                     <label className="text-xs text-slate-500 mb-1 block">End</label>
-                                    <TimeInput
+                                    <TimeSelect
                                         value={partialEnd}
                                         onChange={(v) => { setPartialEnd(v); setTimeError(null); }}
+                                        shiftStart={shiftStartTime}
+                                        shiftEnd={shiftEndTime}
                                     />
                                 </div>
                             </div>

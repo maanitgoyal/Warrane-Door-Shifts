@@ -205,6 +205,18 @@ export default function SwapModal({ shift, slotShifts, currentUser, existingSwap
         });
 
         const { error } = await supabase.from("swaps").insert(swaps);
+        if (!error) {
+            await Promise.all(swaps.map((sw) =>
+                supabase.from("shift_history").insert({
+                    shift_id: sw.shift_id,
+                    action: "swap_requested",
+                    user_username: currentUser.username,
+                    user_name: `${currentUser.first_name} ${currentUser.last_name}`,
+                    from_username: selectedUser.username,
+                    from_name: `${selectedUser.first_name} ${selectedUser.last_name}`,
+                })
+            ));
+        }
         setSubmitting(false);
         if (!error) {
             setDone(true);

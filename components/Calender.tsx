@@ -222,18 +222,18 @@ export default function Calendar() {
 
     return (
         <>
-            <div className="p-4 max-w-[1400px] mx-auto w-full">
-                <div className="flex gap-5">
+            <div className="flex-1 flex flex-col p-4 max-w-[1400px] mx-auto w-full min-h-0">
+                <div className="flex gap-5 flex-1 min-h-0">
 
                     {/* LEFT SIDEBAR */}
-                    <div className="hidden lg:flex lg:flex-col gap-4 w-56 flex-shrink-0">
+                    <div className="hidden lg:flex lg:flex-col gap-4 w-56 flex-shrink-0 min-h-0 overflow-hidden">
                         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
                             <MiniCalendar selectedDate={selectedDate} onSelect={(date: Date) => setSelectedDate(date)} />
                         </div>
 
                         {user && (
-                            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                                <div className="flex items-center justify-between mb-3">
+                            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
+                                <div className="flex items-center justify-between mb-3 flex-shrink-0">
                                     <h2 className="text-white font-semibold text-sm">Available Shifts</h2>
                                     <button
                                         onClick={() => fetchOpenShifts()}
@@ -246,6 +246,7 @@ export default function Calendar() {
                                         </svg>
                                     </button>
                                 </div>
+                                <div className="overflow-y-auto flex-1 min-h-0">
                                 {(() => {
                                     const todayStr = localToUTCMidnight().toISOString().split("T")[0];
                                     const forWeek = openShifts.filter((s) => s.start_at.slice(0, 10) === todayStr);
@@ -302,12 +303,13 @@ export default function Calendar() {
                                         </div>
                                     );
                                 })()}
+                                </div>
                             </div>
                         )}
                     </div>
 
                     {/* MAIN WEEK VIEW */}
-                    <div className="flex-1 min-w-0">
+                    <div className="flex-1 min-w-0 flex flex-col min-h-0">
 
                         {/* Currently on door */}
                         {todayInWeek && (() => {
@@ -321,7 +323,7 @@ export default function Calendar() {
                             const name = claim?.claimant_name || claim?.username || (active.status === "taken" ? "Someone" : null);
                             if (!name) return null;
                             return (
-                                <div className="mb-3 flex items-center gap-2.5 border border-green-600/30 rounded-xl px-4 py-2.5">
+                                <div className="mb-3 flex-shrink-0 flex items-center gap-2.5 border border-green-600/30 rounded-xl px-4 py-2.5">
                                     <div className="w-2 h-2 rounded-full bg-green-400 flex-shrink-0 animate-pulse" />
                                     <span className="text-green-400 text-sm font-medium">Currently on door: {name}</span>
                                 </div>
@@ -329,7 +331,7 @@ export default function Calendar() {
                         })()}
 
                         {/* WEEK GRID */}
-                        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden relative">
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden relative flex-1 flex flex-col min-h-0">
                             {loading && (
                                 <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-slate-900/80 backdrop-blur-[2px]">
                                     <div className="relative w-10 h-10">
@@ -341,8 +343,7 @@ export default function Calendar() {
                             )}
                             <div
                                 ref={scrollRef}
-                                className="overflow-y-auto"
-                                style={{ maxHeight: "calc(100vh - 240px)" }}
+                                className="overflow-y-auto flex-1 min-h-0"
                             >
                             {/* Sticky header: nav row + day names */}
                             <div className="sticky top-0 bg-slate-900 z-20">
@@ -440,8 +441,8 @@ export default function Calendar() {
 
                                                 let bgColor: string;
                                                 if (isPast) bgColor = "bg-slate-700/70 cursor-default";
+                                                else if (hasPendingSwap) bgColor = isUserShift ? "bg-violet-600 hover:bg-violet-500 cursor-pointer" : "bg-violet-600 cursor-default";
                                                 else if (isUserShift) bgColor = "bg-green-600 hover:bg-green-500 cursor-pointer";
-                                                else if (hasApprovedClaim && hasPendingSwap) bgColor = "bg-violet-600 cursor-default";
                                                 else if (hasApprovedClaim) bgColor = "bg-green-700 cursor-default";
                                                 else if (isMyPendingClaim) bgColor = "bg-amber-500 cursor-default";
                                                 else if (isPendingClaim) bgColor = "bg-amber-600 cursor-default";
@@ -449,7 +450,7 @@ export default function Calendar() {
                                                 else bgColor = "bg-slate-600 cursor-default";
 
                                                 let nameLine = "";
-                                                if (hasApprovedClaim && hasPendingSwap) nameLine = shift.pendingSwap.target_name;
+                                                if (hasPendingSwap) nameLine = `${shift.pendingSwap.requester_name || ""} → ${shift.pendingSwap.target_name || ""}`;
                                                 else if (hasApprovedClaim) nameLine = claimantName ?? "";
                                                 else if (isMyPendingClaim || isPendingClaim) nameLine = shift.pendingClaim?.claimant_name ?? "";
                                                 else if (shift.status === "open") nameLine = "Open";
@@ -515,7 +516,7 @@ export default function Calendar() {
                         </div>{/* end week grid */}
 
                         {/* Legend */}
-                        <div className="flex flex-wrap gap-3 mt-3 px-1">
+                        <div className="flex flex-wrap gap-3 mt-3 px-1 flex-shrink-0">
                             {[
                                 { color: "bg-blue-600", label: "Open" },
                                 { color: "bg-green-600", label: "My shift" },
@@ -570,27 +571,88 @@ function TimelineModal({ shift, onClose }: { shift: any; onClose: () => void }) 
     useEffect(() => {
         async function load() {
             setLoading(true);
+
+            // Primary source: shift_history audit log
+            const { data: history } = await supabase
+                .from("shift_history")
+                .select("*")
+                .eq("shift_id", shift.id)
+                .order("created_at");
+
+            if (history && history.length > 0) {
+                const actionLabel: Record<string, (h: any) => string> = {
+                    claim_requested:   (h) => `${h.user_name || h.user_username || "Someone"} requested to claim this shift`,
+                    claim_approved:    (h) => `Admin approved ${h.user_name || h.user_username || "Someone"}'s claim`,
+                    claim_rejected:    (h) => `${h.user_name || h.user_username || "Someone"}'s claim was declined`,
+                    swap_requested:    (h) => `${h.user_name || h.user_username || "Someone"} requested a swap with ${h.from_name || h.from_username || "someone"}`,
+                    swap_approved:     (h) => `Swap approved: ${h.from_name || h.from_username || "?"} → ${h.user_name || h.user_username || "?"}`,
+                    swap_rejected:     (h) => `Swap request by ${h.user_name || h.user_username || "Someone"} was rejected`,
+                    swap_partial_kept: (h) => `${h.user_name || h.user_username || "Someone"} kept their remaining portion`,
+                    admin_assigned:    (h) => h.from_name
+                        ? `Admin reassigned from ${h.from_name} to ${h.user_name || h.user_username || "Someone"}${h.notes ? ` (${h.notes})` : ""}`
+                        : `Admin assigned ${h.user_name || h.user_username || "Someone"} to this shift${h.notes ? ` (${h.notes})` : ""}`,
+                    admin_unassigned:  (h) => `Admin removed ${h.user_name || h.user_username || "Someone"}, shift reopened`,
+                };
+                const actionType: Record<string, string> = {
+                    claim_requested:   "pending",
+                    claim_approved:    "approved",
+                    claim_rejected:    "rejected",
+                    swap_requested:    "swap_pending",
+                    swap_approved:     "swap_approved",
+                    swap_rejected:     "swap_rejected",
+                    swap_partial_kept: "approved",
+                    admin_assigned:    "approved",
+                    admin_unassigned:  "rejected",
+                };
+                const list: any[] = [{ type: "open", label: "Shift posted as open", ts: 0 }];
+                for (const h of history) {
+                    const fn = actionLabel[h.action];
+                    list.push({
+                        type: actionType[h.action] ?? "open",
+                        label: fn ? fn(h) : h.action,
+                        ts: new Date(h.created_at).getTime(),
+                    });
+                }
+                list.sort((a, b) => a.ts - b.ts);
+                setEvents(list);
+                setLoading(false);
+                return;
+            }
+
+            // Fallback: use claims/swaps tables (pre-history data)
             const [{ data: claims }, { data: swaps }] = await Promise.all([
                 supabase.from("claims").select("*").eq("shift_id", shift.id).order("created_at"),
                 supabase.from("swaps").select("*").eq("shift_id", shift.id).order("created_at"),
             ]);
 
-            const list: any[] = [{ type: "open", label: "Shift posted as open" }];
+            const list: any[] = [{ type: "open", label: "Shift posted as open", ts: 0 }];
+
+            const swapAssignedUsernames = new Set(
+                (swaps ?? []).filter((s) => s.status === "approved").map((s) => s.target_username)
+            );
 
             for (const c of claims ?? []) {
+                if (swapAssignedUsernames.has(c.username)) continue;
                 const name = c.claimant_name || c.username || "Someone";
-                list.push({ type: "pending",  label: `${name} requested admin approval` });
-                if (c.status === "approved")  list.push({ type: "approved", label: `Admin approved ${name} for this shift` });
-                if (c.status === "rejected")  list.push({ type: "rejected", label: `${name}'s request was rejected by admin` });
+                const ts = new Date(c.created_at).getTime();
+                if (c.status === "pending") {
+                    list.push({ type: "pending", label: `${name} requested admin approval`, ts });
+                } else if (c.status === "approved") {
+                    list.push({ type: "approved", label: `Admin assigned ${name} to this shift`, ts });
+                } else if (c.status === "rejected") {
+                    list.push({ type: "rejected", label: `${name}'s claim was declined`, ts });
+                }
             }
             for (const s of swaps ?? []) {
                 const from = s.requester_name || s.requester_username || "Someone";
                 const to   = s.target_name    || s.target_username    || "Someone";
-                list.push({ type: "swap_pending", label: `${from} requested a swap with ${to}` });
-                if (s.status === "approved") list.push({ type: "swap_approved", label: `Swap approved: ${from} --> ${to}` });
-                if (s.status === "rejected") list.push({ type: "swap_rejected", label: `Swap request by ${from} was rejected` });
+                const ts = new Date(s.created_at).getTime();
+                list.push({ type: "swap_pending",  label: `${from} requested a swap with ${to}`, ts });
+                if (s.status === "approved") list.push({ type: "swap_approved", label: `Swap approved: ${from} → ${to}`, ts: ts + 1 });
+                if (s.status === "rejected") list.push({ type: "swap_rejected", label: `Swap request by ${from} was rejected`, ts: ts + 1 });
             }
 
+            list.sort((a, b) => a.ts - b.ts);
             setEvents(list);
             setLoading(false);
         }
@@ -685,6 +747,16 @@ function ClaimModal({ shift, slotShifts, user, onClose, onSuccess }: {
             username: user.username,
         }));
         const { error } = await supabase.from("claims").insert(claims);
+        if (!error) {
+            await Promise.all(selected.map((shiftId) =>
+                supabase.from("shift_history").insert({
+                    shift_id: shiftId,
+                    action: "claim_requested",
+                    user_username: user.username,
+                    user_name: `${user.first_name} ${user.last_name}`,
+                })
+            ));
+        }
         setSubmitting(false);
         if (!error) {
             setDone(true);

@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 
 export default function TopBar() {
     const router = useRouter();
@@ -11,12 +12,33 @@ export default function TopBar() {
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
     const [showPasswordReminder, setShowPasswordReminder] = useState(false);
+    const [theme, setTheme] = useState<"default" | "warrane">("default");
 
     useEffect(() => {
         const stored = localStorage.getItem("shift_user");
         if (stored) setUser(JSON.parse(stored));
-        if (sessionStorage.getItem("show_password_reminder")) setShowPasswordReminder(true);
+        if (sessionStorage.getItem("show_password_reminder")) {
+            setShowPasswordReminder(true);
+            setTimeout(() => {
+                sessionStorage.removeItem("show_password_reminder");
+                setShowPasswordReminder(false);
+            }, 5000);
+        }
+        const savedTheme = localStorage.getItem("warrane_theme") as "warrane" | null;
+        if (savedTheme === "warrane") setTheme("warrane");
     }, []);
+
+    function toggleTheme() {
+        const next = theme === "warrane" ? "default" : "warrane";
+        setTheme(next);
+        if (next === "warrane") {
+            document.documentElement.setAttribute("data-theme", "warrane");
+            localStorage.setItem("warrane_theme", "warrane");
+        } else {
+            document.documentElement.removeAttribute("data-theme");
+            localStorage.removeItem("warrane_theme");
+        }
+    }
 
     useEffect(() => {
         function onUserUpdated() {
@@ -52,15 +74,35 @@ export default function TopBar() {
 
     return (
         <>
-        <div className="flex justify-between items-center px-6 py-4 border-b border-slate-800">
+        <div className={`warrane-nav flex justify-between items-center px-6 py-4 border-b border-slate-800`}>
             <Link
                 href="/"
-                className="text-xl font-bold hover:opacity-80 transition-opacity"
+                className="flex items-center gap-2.5 hover:opacity-80 transition-opacity"
             >
-                Warrane Door Shifts {new Date().getFullYear()}
+                <Image src="/warrane-logo.png" alt="Warrane College" width={32} height={32} className="rounded-sm object-contain" />
+                <span className="text-xl font-bold">Warrane Door Shifts {new Date().getFullYear()}</span>
             </Link>
 
             <div className="flex items-center gap-3">
+            {/* Theme toggle */}
+            <button
+                onClick={toggleTheme}
+                title={theme === "warrane" ? "Switch to default theme" : "Switch to Warrane theme"}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+                {theme === "warrane" ? (
+                    /* Slate/moon icon when on Warrane theme */
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 12.79A9 9 0 1111.21 3a7 7 0 109.79 9.79z" />
+                    </svg>
+                ) : (
+                    /* Warrane/flame icon when on default theme */
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 16.121A3 3 0 1012.015 11L11 14H9c0 .768.293 1.536.879 2.121z" />
+                    </svg>
+                )}
+            </button>
             {user && (
                 <nav className="flex gap-1">
                     {[
