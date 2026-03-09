@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
+import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase";
 
 /* ─── helpers ─── */
@@ -39,6 +39,43 @@ function formatUTCTime(date: Date) {
 
 const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DAY_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function getSydneyParts(d: Date = new Date()) {
+    const parts = new Intl.DateTimeFormat("en-AU", {
+        timeZone: "Australia/Sydney",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    }).formatToParts(d);
+    const get = (type: string) => parseInt(parts.find(p => p.type === type)!.value);
+    return { year: get("year"), month: get("month") - 1, day: get("day"), hour: get("hour") % 24, minute: get("minute"), second: get("second") };
+}
+
+function fakeUtcNow(): Date {
+    const sp = getSydneyParts();
+    return new Date(Date.UTC(sp.year, sp.month, sp.day, sp.hour, sp.minute, sp.second));
+}
+
+function getCurrentTriStart(): Date {
+    const now = fakeUtcNow();
+    for (let i = TRIMESTERS.length - 1; i >= 0; i--) {
+        if (now >= TRIMESTERS[i].start) return TRIMESTERS[i].start;
+    }
+    return TRIMESTERS[0].start;
+}
+
+function isNightShift(startAt: string, endAt: string): boolean {
+    const s = new Date(startAt);
+    const e = new Date(endAt);
+    return s.getUTCHours() === 23 && e.getUTCHours() === 7;
+}
+
+function calculatePay(startAt: string, endAt: string): number {
+    if (isNightShift(startAt, endAt)) return 30;
+    const hours = (new Date(endAt).getTime() - new Date(startAt).getTime()) / 3600000;
+    return hours * 20;
+}
+
+type PayoutGroup = { username: string; name: string; shifts: any[] };
 
 
 /* ─── types ─── */
@@ -223,6 +260,21 @@ export default function AdminPage() {
     const [assignModal, setAssignModal] = useState<any>(null);
     const [deleteConfirmShift, setDeleteConfirmShift] = useState<any>(null);
 
+    const [activeTab, setActiveTab] = useState<"approvals" | "assignment" | "users" | "payouts">("approvals");
+    const [allUsers, setAllUsers] = useState<any[]>([]);
+    const [userSearch, setUserSearch] = useState("");
+    const [shiftMembers, setShiftMembers] = useState<{ username: string; claimant_name: string }[]>([]);
+    const [onDoorNow, setOnDoorNow] = useState<Set<string>>(new Set());
+    const [usersLoading, setUsersLoading] = useState(false);
+
+    const triStart = getCurrentTriStart();
+    const [payoutGroups, setPayoutGroups] = useState<PayoutGroup[]>([]);
+    const [payoutsLoading, setPayoutsLoading] = useState(false);
+    const [payoutsSearch, setPayoutsSearch] = useState("");
+    const [expandedPayouts, setExpandedPayouts] = useState<Set<string>>(new Set());
+    const [dateFrom, setDateFrom] = useState(() => triStart.toISOString().split("T")[0]);
+    const [dateTo, setDateTo] = useState(() => fakeUtcNow().toISOString().split("T")[0]);
+
     useEffect(() => {
         const stored = localStorage.getItem("shift_user");
         if (!stored) { router.push("/login"); return; }
@@ -243,6 +295,14 @@ export default function AdminPage() {
     useEffect(() => {
         if (user) fetchDateShifts();
     }, [user, assignDate]);
+
+    useEffect(() => {
+        if (user && activeTab === "users") fetchUsersData();
+    }, [user, activeTab]);
+
+    useEffect(() => {
+        if (user && activeTab === "payouts") fetchPayouts();
+    }, [user, activeTab]);
 
     async function fetchData() {
         const [{ data: claimsRaw }, { data: swapsRaw }] = await Promise.all([
@@ -297,6 +357,67 @@ export default function AdminPage() {
             if (approved) claimMap = Object.fromEntries(approved.map((c) => [c.shift_id, c]));
         }
         setDateShifts(shiftsRaw.map((s) => ({ ...s, assignedTo: claimMap[s.id] ?? null })));
+    }
+
+    async function fetchUsersData() {
+        setUsersLoading(true);
+        const now = new Date();
+        const fakeNow = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds())).toISOString();
+        const [{ data: usersRaw }, { data: currentShifts }, { data: approvedClaims }] = await Promise.all([
+            supabase.from("users").select("id, username, first_name, last_name, role").order("first_name"),
+            supabase.from("shifts").select("id").lte("start_at", fakeNow).gte("end_at", fakeNow),
+            supabase.from("claims").select("username, claimant_name").eq("status", "approved"),
+        ]);
+        setAllUsers(usersRaw ?? []);
+        if (currentShifts && currentShifts.length > 0) {
+            const { data: currentClaims } = await supabase.from("claims")
+                .select("username")
+                .in("shift_id", currentShifts.map((s) => s.id))
+                .eq("status", "approved");
+            setOnDoorNow(new Set((currentClaims ?? []).map((c) => c.username)));
+        } else {
+            setOnDoorNow(new Set());
+        }
+        const seen = new Set<string>();
+        const members: { username: string; claimant_name: string }[] = [];
+        for (const c of (approvedClaims ?? [])) {
+            if (!seen.has(c.username)) { seen.add(c.username); members.push(c); }
+        }
+        setShiftMembers(members);
+        setUsersLoading(false);
+    }
+
+    async function fetchPayouts() {
+        setPayoutsLoading(true);
+        const now = fakeUtcNow().toISOString();
+        const [{ data: usersRaw }, { data: claimsRaw }] = await Promise.all([
+            supabase.from("users").select("username, role"),
+            supabase.from("claims").select("shift_id, username, claimant_name").eq("status", "approved"),
+        ]);
+        if (!claimsRaw || claimsRaw.length === 0) { setPayoutGroups([]); setPayoutsLoading(false); return; }
+        const staffUsernames = new Set((usersRaw ?? []).filter((u) => u.role === "staff").map((u) => u.username));
+        const filteredClaims = claimsRaw.filter((c) => !staffUsernames.has(c.username));
+        if (filteredClaims.length === 0) { setPayoutGroups([]); setPayoutsLoading(false); return; }
+        const shiftIds = [...new Set(filteredClaims.map((c) => c.shift_id))];
+        const { data: shiftsRaw } = await supabase.from("shifts").select("id, start_at, end_at").in("id", shiftIds).lt("end_at", now);
+        const pastIds = new Set((shiftsRaw ?? []).map((s) => s.id));
+        const shiftMap = Object.fromEntries((shiftsRaw ?? []).map((s) => [s.id, s]));
+        const byUser: Record<string, PayoutGroup> = {};
+        for (const c of filteredClaims) {
+            if (!pastIds.has(c.shift_id)) continue;
+            if (!byUser[c.username]) byUser[c.username] = { username: c.username, name: c.claimant_name, shifts: [] };
+            byUser[c.username].shifts.push(shiftMap[c.shift_id]);
+        }
+        setPayoutGroups(Object.values(byUser).sort((a, b) => a.name.localeCompare(b.name)));
+        setPayoutsLoading(false);
+    }
+
+    function togglePayoutExpand(username: string) {
+        setExpandedPayouts((prev) => {
+            const next = new Set(prev);
+            next.has(username) ? next.delete(username) : next.add(username);
+            return next;
+        });
     }
 
     function deleteShift(shift: any) {
@@ -490,6 +611,38 @@ export default function AdminPage() {
 
     const totalPending = userGroups.reduce((n, g) => n + g.claims.length + g.swaps.length, 0);
 
+    const fromMs = new Date(dateFrom + "T00:00:00Z").getTime();
+    const toMs = new Date(dateTo + "T23:59:59Z").getTime();
+    const filteredPayouts = payoutGroups
+        .map((g) => ({ ...g, shifts: g.shifts.filter((sh) => { const t = new Date(sh.start_at).getTime(); return t >= fromMs && t <= toMs; }) }))
+        .filter((g) => g.shifts.length > 0 && g.name.toLowerCase().includes(payoutsSearch.toLowerCase()));
+    const grandTotal = filteredPayouts.reduce((sum, g) => sum + g.shifts.reduce((s, sh) => s + calculatePay(sh.start_at, sh.end_at), 0), 0);
+
+    function exportToExcel() {
+        const rows: (string | number)[][] = [["Name", "Date", "Day", "Week", "Time", "Type", "Pay (AUD)"]];
+        for (const group of filteredPayouts) {
+            const sorted = [...group.shifts].sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
+            let firstRow = true;
+            for (const sh of sorted) {
+                const night = isNightShift(sh.start_at, sh.end_at);
+                const pay = calculatePay(sh.start_at, sh.end_at);
+                const start = new Date(sh.start_at);
+                const end = new Date(sh.end_at);
+                const hours = !night ? (end.getTime() - start.getTime()) / 3600000 : null;
+                rows.push([firstRow ? group.name : "", start.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }), DAY[start.getUTCDay()], getTriWeekLabel(start), `${formatUTCTime(start)} -- ${formatUTCTime(end)}`, night ? "Night shift" : `${hours}h x $20/hr`, pay]);
+                firstRow = false;
+            }
+            rows.push(["", "", "", "", "", "Subtotal", group.shifts.reduce((s, sh) => s + calculatePay(sh.start_at, sh.end_at), 0)]);
+            rows.push([]);
+        }
+        rows.push(["", "", "", "", "", "Grand Total", grandTotal]);
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+        ws["!cols"] = [{ wch: 22 }, { wch: 16 }, { wch: 6 }, { wch: 10 }, { wch: 20 }, { wch: 18 }, { wch: 12 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Payouts");
+        XLSX.writeFile(wb, `payouts-${dateFrom}-to-${dateTo}.xlsx`);
+    }
+
     return (
         <div className="p-6 max-w-4xl mx-auto">
             {/* Header */}
@@ -505,7 +658,7 @@ export default function AdminPage() {
                         </span>
                     )}
                     <button
-                        onClick={() => { fetchData(); fetchDateShifts(); }}
+                        onClick={() => { if (activeTab === "users") fetchUsersData(); else if (activeTab === "payouts") fetchPayouts(); else { fetchData(); fetchDateShifts(); } }}
                         className="text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 cursor-pointer transition-colors"
                     >
                         Refresh
@@ -513,6 +666,38 @@ export default function AdminPage() {
                 </div>
             </div>
 
+            {/* ── Tabs ── */}
+            <div className="flex gap-1 mb-8 bg-slate-900 border border-slate-800 rounded-xl p-1">
+                <button
+                    onClick={() => setActiveTab("approvals")}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-lg text-sm font-medium transition-colors cursor-pointer ${activeTab === "approvals" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-300"}`}
+                >
+                    Approvals
+                    {totalPending > 0 && (
+                        <span className="bg-amber-500 text-black text-xs font-bold px-1.5 py-0.5 rounded-full leading-none">{totalPending}</span>
+                    )}
+                </button>
+                <button
+                    onClick={() => setActiveTab("assignment")}
+                    className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors cursor-pointer ${activeTab === "assignment" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-300"}`}
+                >
+                    Assignment
+                </button>
+                <button
+                    onClick={() => setActiveTab("users")}
+                    className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors cursor-pointer ${activeTab === "users" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-300"}`}
+                >
+                    Users
+                </button>
+                <button
+                    onClick={() => setActiveTab("payouts")}
+                    className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors cursor-pointer ${activeTab === "payouts" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-300"}`}
+                >
+                    Payouts
+                </button>
+            </div>
+
+            {activeTab === "approvals" && (<>
             {/* ── Pending Approvals ── */}
             <section className="mb-12">
                 <div className="flex items-center gap-3 mb-4">
@@ -664,7 +849,9 @@ export default function AdminPage() {
                     </div>
                 )}
             </section>
+            </>)}
 
+            {activeTab === "assignment" && (<>
             {/* ── Shift Assignment ── */}
             <section>
                 <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-4">Shift Assignment</h2>
@@ -732,19 +919,196 @@ export default function AdminPage() {
                 )}
             </section>
 
-            {/* ── Payouts link ── */}
-            <section className="mt-12">
-                <Link
-                    href="/admin/payouts"
-                    className="flex items-center justify-between bg-slate-900 border border-slate-800 hover:border-slate-600 rounded-2xl px-5 py-4 transition-colors group"
-                >
-                    <div>
-                        <h2 className="text-white font-semibold text-sm">Payouts</h2>
-                        <p className="text-slate-500 text-xs mt-0.5">View completed shift earnings for all users</p>
+            </>)}
+
+            {activeTab === "users" && (
+                <div className="flex flex-col gap-8">
+                    {/* Door Members */}
+                    <section>
+                        <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-4">Door Members</h2>
+                        {usersLoading ? (
+                            <p className="text-slate-500 text-sm">Loading…</p>
+                        ) : shiftMembers.length === 0 ? (
+                            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center">
+                                <p className="text-slate-400 text-sm">No members have done a shift yet.</p>
+                            </div>
+                        ) : (
+                            <div className="flex flex-col gap-2">
+                                {shiftMembers.map((u) => {
+                                    const isOnDoor = onDoorNow.has(u.username);
+                                    return (
+                                        <div key={u.username} className="bg-slate-900 border border-slate-800 rounded-2xl px-5 py-4 flex items-center gap-4">
+                                            <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 ${isOnDoor ? "bg-green-700" : "bg-slate-700"}`}>
+                                                {u.claimant_name.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase()}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="text-white font-semibold text-sm">{u.claimant_name}</div>
+                                                <div className="text-slate-400 text-xs">{u.username}</div>
+                                            </div>
+                                            {isOnDoor && (
+                                                <span className="text-xs bg-green-600/20 text-green-400 border border-green-600/30 px-2 py-0.5 rounded-full flex items-center gap-1 flex-shrink-0">
+                                                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+                                                    On Door Now
+                                                </span>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </section>
+
+                    {/* All Users */}
+                    <section>
+                        <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-4">All Users</h2>
+                        <input
+                            type="text"
+                            placeholder="Search by name or username…"
+                            value={userSearch}
+                            onChange={(e) => setUserSearch(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder:text-slate-500 focus:outline-none focus:border-slate-600 text-sm mb-4"
+                        />
+                        {usersLoading ? (
+                            <p className="text-slate-500 text-sm">Loading…</p>
+                        ) : (() => {
+                            const q = userSearch.toLowerCase();
+                            const filtered = allUsers.filter((u) =>
+                                !q || `${u.first_name} ${u.last_name}`.toLowerCase().includes(q) || u.username.toLowerCase().includes(q)
+                            );
+                            return filtered.length === 0 ? (
+                                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center">
+                                    <p className="text-slate-400 text-sm">No users found.</p>
+                                </div>
+                            ) : (
+                                <div className="flex flex-col gap-2">
+                                    {filtered.map((u) => {
+                                        const initials = `${u.first_name?.[0] ?? ""}${u.last_name?.[0] ?? ""}`.toUpperCase();
+                                        const isOnDoor = onDoorNow.has(u.username);
+                                        return (
+                                            <div key={u.username} className="bg-slate-900 border border-slate-800 rounded-2xl px-5 py-4 flex items-center gap-4">
+                                                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 ${u.role === "admin" ? "bg-indigo-700" : "bg-slate-700"}`}>
+                                                    {initials}
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        <span className="text-white font-semibold text-sm">{u.first_name} {u.last_name}</span>
+                                                        {u.role === "admin" && <span className="text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-600/30 px-1.5 py-0.5 rounded-full">admin</span>}
+                                                        {u.role === "staff" && <span className="text-xs bg-slate-600/20 text-slate-400 border border-slate-600/30 px-1.5 py-0.5 rounded-full">staff</span>}
+                                                        {isOnDoor && <span className="text-xs bg-green-600/20 text-green-400 border border-green-600/30 px-1.5 py-0.5 rounded-full flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />On Door</span>}
+                                                    </div>
+                                                    <div className="text-slate-400 text-xs">{u.username}</div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            );
+                        })()}
+                    </section>
+                </div>
+            )}
+
+            {activeTab === "payouts" && (
+                <div>
+                    {/* Filters */}
+                    <div className="flex flex-wrap items-center gap-3 mb-6">
+                        <div className="flex items-center bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                            <div className="flex items-center gap-2 px-4 py-2.5">
+                                <span className="text-slate-500 text-xs font-medium uppercase tracking-wide">From</span>
+                                <input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} className="bg-transparent text-white text-sm focus:outline-none cursor-pointer" />
+                            </div>
+                            <div className="text-slate-600 px-1 select-none">→</div>
+                            <div className="flex items-center gap-2 px-4 py-2.5">
+                                <span className="text-slate-500 text-xs font-medium uppercase tracking-wide">To</span>
+                                <input type="date" value={dateTo} min={dateFrom} onChange={(e) => setDateTo(e.target.value)} className="bg-transparent text-white text-sm focus:outline-none cursor-pointer" />
+                            </div>
+                        </div>
+                        <input
+                            type="text"
+                            placeholder="Search by name..."
+                            value={payoutsSearch}
+                            onChange={(e) => setPayoutsSearch(e.target.value)}
+                            className="flex-1 min-w-40 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-slate-600 text-sm"
+                        />
+                        {!payoutsLoading && filteredPayouts.length > 0 && (
+                            <>
+                                <span className="text-green-400 font-bold text-lg">${grandTotal.toFixed(2)}</span>
+                                <button
+                                    onClick={exportToExcel}
+                                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium cursor-pointer transition-colors flex-shrink-0"
+                                >
+                                    ↓ Export Excel
+                                </button>
+                            </>
+                        )}
                     </div>
-                    <span className="text-slate-500 group-hover:text-slate-300 transition-colors text-sm">→</span>
-                </Link>
-            </section>
+
+                    {payoutsLoading ? (
+                        <p className="text-slate-500 text-sm">Loading...</p>
+                    ) : filteredPayouts.length === 0 ? (
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center">
+                            <p className="text-slate-400">{payoutsSearch ? "No results found." : "No completed shifts for this period."}</p>
+                        </div>
+                    ) : (
+                        <div className="flex flex-col gap-3">
+                            {filteredPayouts.map((group) => {
+                                const total = group.shifts.reduce((s: number, sh: any) => s + calculatePay(sh.start_at, sh.end_at), 0);
+                                const isOpen = expandedPayouts.has(group.username);
+                                const initials = group.name.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase();
+                                return (
+                                    <div key={group.username} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                                        <button
+                                            onClick={() => togglePayoutExpand(group.username)}
+                                            className="w-full flex items-center justify-between px-5 py-4 hover:bg-slate-800/50 transition-colors cursor-pointer"
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-9 h-9 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">{initials}</div>
+                                                <div className="text-left">
+                                                    <div className="text-white font-semibold text-sm">{group.name}</div>
+                                                    <div className="text-slate-500 text-xs">{group.shifts.length} shift{group.shifts.length !== 1 ? "s" : ""}</div>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                <span className="text-green-400 font-bold">${total.toFixed(2)}</span>
+                                                <span className="text-slate-500 text-xs">{isOpen ? "▲" : "▼"}</span>
+                                            </div>
+                                        </button>
+                                        {isOpen && (
+                                            <div className="border-t border-slate-800 divide-y divide-slate-800/60">
+                                                {group.shifts
+                                                    .sort((a: any, b: any) => new Date(b.start_at).getTime() - new Date(a.start_at).getTime())
+                                                    .map((sh: any) => {
+                                                        const night = isNightShift(sh.start_at, sh.end_at);
+                                                        const pay = calculatePay(sh.start_at, sh.end_at);
+                                                        const start = new Date(sh.start_at);
+                                                        const end = new Date(sh.end_at);
+                                                        const hours = !night ? (end.getTime() - start.getTime()) / 3600000 : null;
+                                                        return (
+                                                            <div key={sh.id} className="px-5 py-3 flex items-center justify-between gap-4">
+                                                                <div>
+                                                                    <div className="text-white text-sm font-medium">{formatUTCTime(start)} -- {formatUTCTime(end)}</div>
+                                                                    <div className="text-slate-400 text-xs mt-0.5">
+                                                                        {getTriWeekLabel(start)} · {DAY[start.getUTCDay()]} {start.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "UTC" })}
+                                                                        {night ? " · Night shift" : ` · ${hours}h x $20/hr`}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="text-green-400 font-semibold flex-shrink-0">${pay.toFixed(2)}</div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                <div className="px-5 py-3 flex justify-between items-center bg-slate-800/40">
+                                                    <span className="text-slate-400 text-xs font-medium">Total</span>
+                                                    <span className="text-green-400 font-bold">${total.toFixed(2)}</span>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Floating batch action bar */}
             {selectedIds.size > 0 && (
