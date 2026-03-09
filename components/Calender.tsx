@@ -14,6 +14,9 @@ export default function Calendar() {
     const [claimModal, setClaimModal] = useState<{ shift: any; slotShifts: any[] } | null>(null);
     const [userShifts, setUserShifts] = useState<any[]>([]);
     const [swapModal, setSwapModal] = useState<{ shift: any; slotShifts: any[] } | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [loadingOpen, setLoadingOpen] = useState(false);
+    const [timelineShift, setTimelineShift] = useState<any | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -25,6 +28,7 @@ export default function Calendar() {
     useEffect(() => { fetchOpenShifts(); }, [selectedDate]);
 
     async function fetchOpenShifts() {
+        setLoadingOpen(true);
         const now = new Date();
         const sp = getSydneyParts();
         const fakeNowIso = new Date(Date.UTC(sp.year, sp.month, sp.day, sp.hour, sp.minute, sp.second)).toISOString();
@@ -53,9 +57,11 @@ export default function Calendar() {
             }
             setOpenShifts(data.filter((s) => !excludeIds.has(s.id)));
         }
+        setLoadingOpen(false);
     }
 
     async function fetchShifts() {
+        setLoading(true);
         const wd = getWeekDates(selectedDate);
         const weekStart = wd[0];
         const weekEndExclusive = new Date(wd[6].getTime() + 86400000);
@@ -128,6 +134,7 @@ export default function Calendar() {
         }
 
         setShifts(formatted);
+        setLoading(false);
     }
 
     function getSlotShifts(shift: any): any[] {
@@ -178,7 +185,25 @@ export default function Calendar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => { if (user) fetchUserShifts(); }, [user]);
 
-    // No auto-scroll — show from midnight so 12AM shifts are visible
+    // Auto-scroll: once shifts first load, scroll to start of active shift (or current time - 1h)
+    const [hasScrolled, setHasScrolled] = useState(false);
+    useEffect(() => {
+        if (loading || hasScrolled || !scrollRef.current) return;
+        const sp = getSydneyParts();
+        const nowMs = Date.UTC(sp.year, sp.month, sp.day, sp.hour, sp.minute, sp.second);
+        const active = shifts.filter((s) => !s._isCont).find(
+            (s) => nowMs >= new Date(s.start_at).getTime() && nowMs < new Date(s.end_at).getTime()
+        );
+        let scrollHour: number;
+        if (active) {
+            const startH = new Date(active.start_at).getUTCHours() + new Date(active.start_at).getUTCMinutes() / 60;
+            scrollHour = Math.max(0, startH - 0.5); // just above shift start
+        } else {
+            scrollHour = Math.max(0, sp.hour - 1);
+        }
+        scrollRef.current.scrollTop = scrollHour * HOUR_HEIGHT;
+        setHasScrolled(true);
+    }, [loading, shifts, hasScrolled]);
 
     const userShiftIds = new Set(userShifts.map((s) => s.id));
     const weekDates = getWeekDates(selectedDate);
@@ -208,7 +233,19 @@ export default function Calendar() {
 
                         {user && (
                             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                                <h2 className="text-white font-semibold text-sm mb-3">Available Shifts</h2>
+                                <div className="flex items-center justify-between mb-3">
+                                    <h2 className="text-white font-semibold text-sm">Available Shifts</h2>
+                                    <button
+                                        onClick={() => fetchOpenShifts()}
+                                        disabled={loadingOpen}
+                                        className="text-slate-400 hover:text-white disabled:opacity-40 cursor-pointer transition-colors"
+                                        title="Refresh"
+                                    >
+                                        <svg className={`w-3.5 h-3.5 ${loadingOpen ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                        </svg>
+                                    </button>
+                                </div>
                                 {(() => {
                                     const todayStr = localToUTCMidnight().toISOString().split("T")[0];
                                     const forWeek = openShifts.filter((s) => s.start_at.slice(0, 10) === todayStr);
@@ -223,7 +260,7 @@ export default function Calendar() {
                                                 const firstEnd = new Date(group[0].end_at);
                                                 const slotKey = `${first.getUTCDay()}-${first.getUTCHours()}:${first.getUTCMinutes()}-${firstEnd.getUTCHours()}:${firstEnd.getUTCMinutes()}`;
                                                 const dayName = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][first.getUTCDay()];
-                                                const timeLabel = `${formatUTCTime(first)} – ${formatUTCTime(firstEnd)}`;
+                                                const timeLabel = `${formatUTCTime(first)} -- ${formatUTCTime(firstEnd)}`;
 
                                                 const alsoAvailable = openShifts.filter((s) => {
                                                     if (s.start_at.slice(0, 10) === todayStr) return false;
@@ -292,7 +329,16 @@ export default function Calendar() {
                         })()}
 
                         {/* WEEK GRID */}
-                        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden relative">
+                            {loading && (
+                                <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-slate-900/80 backdrop-blur-[2px]">
+                                    <div className="relative w-10 h-10">
+                                        <div className="absolute inset-0 rounded-full border-2 border-indigo-500/20" />
+                                        <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-indigo-400 animate-spin" />
+                                    </div>
+                                    <span className="text-slate-400 text-xs font-medium tracking-wide">Loading shifts…</span>
+                                </div>
+                            )}
                             <div
                                 ref={scrollRef}
                                 className="overflow-y-auto"
@@ -410,7 +456,7 @@ export default function Calendar() {
 
                                                 const shiftEndDate = new Date(shift.end_at);
                                                 const realEndH = shiftEndDate.getUTCHours() + shiftEndDate.getUTCMinutes() / 60;
-                                                const timeLabel = `${formatHourDecimal(shift.start)} – ${formatHourDecimal(realEndH)}`;
+                                                const timeLabel = `${formatHourDecimal(shift.start)} -- ${formatHourDecimal(realEndH)}`;
                                                 const minHeight = Math.max(height, 20);
 
                                                 return (
@@ -421,7 +467,7 @@ export default function Calendar() {
                                                             if (isUserShift) openSwapModal(shift);
                                                             else if (!hasApprovedClaim && !isPendingClaim && !isMyPendingClaim) openClaimModal(shift);
                                                         }}
-                                                        title={`${formatHourDecimal(shift.start)} – ${formatHourDecimal(shift.end)}${nameLine ? ` · ${nameLine}` : ""}`}
+                                                        title={`${formatHourDecimal(shift.start)} -- ${formatHourDecimal(shift.end)}${nameLine ? ` · ${nameLine}` : ""}`}
                                                         className={`absolute inset-x-0.5 rounded-md text-white overflow-hidden transition-colors ${bgColor}`}
                                                         style={{
                                                             top: `${shift.start * HOUR_HEIGHT + 1}px`,
@@ -432,6 +478,17 @@ export default function Calendar() {
                                                         <div className="text-[9px] font-medium opacity-75 leading-tight">{timeLabel}</div>
                                                         {nameLine && (
                                                             <div className="text-[10px] font-bold truncate leading-tight">{nameLine}</div>
+                                                        )}
+                                                        {minHeight >= 20 && (
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); setTimelineShift(shift); }}
+                                                                className="absolute bottom-1 right-1 w-4 h-4 rounded flex items-center justify-center bg-black/25 hover:bg-black/50 transition-colors"
+                                                                title="View history"
+                                                            >
+                                                                <svg className="w-2.5 h-2.5 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                </svg>
+                                                            </button>
                                                         )}
                                                     </div>
                                                 );
@@ -496,7 +553,97 @@ export default function Calendar() {
                     onSuccess={() => { fetchUserShifts(); fetchShifts(); }}
                 />
             )}
+
+            {timelineShift && (
+                <TimelineModal shift={timelineShift} onClose={() => setTimelineShift(null)} />
+            )}
         </>
+    );
+}
+
+/* ---------------- TIMELINE MODAL ---------------- */
+
+function TimelineModal({ shift, onClose }: { shift: any; onClose: () => void }) {
+    const [events, setEvents] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        async function load() {
+            setLoading(true);
+            const [{ data: claims }, { data: swaps }] = await Promise.all([
+                supabase.from("claims").select("*").eq("shift_id", shift.id).order("created_at"),
+                supabase.from("swaps").select("*").eq("shift_id", shift.id).order("created_at"),
+            ]);
+
+            const list: any[] = [{ type: "open", label: "Shift posted as open" }];
+
+            for (const c of claims ?? []) {
+                const name = c.claimant_name || c.username || "Someone";
+                list.push({ type: "pending",  label: `${name} requested admin approval` });
+                if (c.status === "approved")  list.push({ type: "approved", label: `Admin approved ${name} for this shift` });
+                if (c.status === "rejected")  list.push({ type: "rejected", label: `${name}'s request was rejected by admin` });
+            }
+            for (const s of swaps ?? []) {
+                const from = s.requester_name || s.requester_username || "Someone";
+                const to   = s.target_name    || s.target_username    || "Someone";
+                list.push({ type: "swap_pending", label: `${from} requested a swap with ${to}` });
+                if (s.status === "approved") list.push({ type: "swap_approved", label: `Swap approved: ${from} --> ${to}` });
+                if (s.status === "rejected") list.push({ type: "swap_rejected", label: `Swap request by ${from} was rejected` });
+            }
+
+            setEvents(list);
+            setLoading(false);
+        }
+        load();
+    }, [shift.id]);
+
+    const startDate = new Date(shift.start_at);
+    const endDate   = new Date(shift.end_at);
+    const dayName   = startDate.toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "short", timeZone: "UTC" });
+    const timeRange = `${formatUTCTime(startDate)} -- ${formatUTCTime(endDate)}`;
+
+    const dot: Record<string, string> = {
+        open:          "bg-slate-400",
+        pending:       "bg-amber-400",
+        approved:      "bg-green-400",
+        rejected:      "bg-red-400",
+        swap_pending:  "bg-violet-400",
+        swap_approved: "bg-green-400",
+        swap_rejected: "bg-red-400",
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-96 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                <div className="flex justify-between items-start mb-5">
+                    <div>
+                        <h2 className="text-white font-semibold text-base">{dayName}</h2>
+                        <p className="text-slate-400 text-sm">{timeRange}</p>
+                    </div>
+                    <button onClick={onClose} className="text-slate-500 hover:text-white text-xl cursor-pointer">✕</button>
+                </div>
+
+                {loading ? (
+                    <div className="flex items-center justify-center py-8 gap-3">
+                        <div className="w-5 h-5 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin" />
+                        <span className="text-slate-400 text-sm">Loading history…</span>
+                    </div>
+                ) : (
+                    <div className="relative pl-4">
+                        {/* vertical line */}
+                        <div className="absolute left-[7px] top-2 bottom-2 w-px bg-slate-700" />
+                        <div className="flex flex-col gap-4">
+                            {events.map((ev, i) => (
+                                <div key={i} className="flex items-start gap-3">
+                                    <div className={`w-3.5 h-3.5 rounded-full flex-shrink-0 mt-0.5 ring-2 ring-slate-900 ${dot[ev.type] ?? "bg-slate-400"}`} />
+                                    <span className="text-slate-300 text-sm leading-snug">{ev.label}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
     );
 }
 
@@ -516,7 +663,7 @@ function ClaimModal({ shift, slotShifts, user, onClose, onSuccess }: {
     const first = new Date(shift.start_at);
     const firstEnd = new Date(shift.end_at);
     const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][first.getUTCDay()];
-    const timeLabel = `${formatUTCTime(first)} – ${formatUTCTime(firstEnd)}`;
+    const timeLabel = `${formatUTCTime(first)} -- ${formatUTCTime(firstEnd)}`;
     const allIds = slotShifts.map((s: any) => s.id);
 
     function toggleShift(id: string) {
